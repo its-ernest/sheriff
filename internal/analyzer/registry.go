@@ -8,6 +8,7 @@ package analyzer
 import (
 	"golang.org/x/tools/go/analysis"
 
+	"github.com/its-ernest/sheriff/internal/analyzer/assert"
 	"github.com/its-ernest/sheriff/internal/analyzer/bounds"
 	"github.com/its-ernest/sheriff/internal/analyzer/divzero"
 	"github.com/its-ernest/sheriff/internal/analyzer/nilptr"
@@ -22,4 +23,5 @@ var analyzers = []*analysis.Analyzer{
 	nilptr.Analyzer,
 	divzero.Analyzer,
 	bounds.Analyzer,
+	assert.Analyzer,
 }

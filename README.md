@@ -5,11 +5,12 @@
 Sheriff identifies dangerous execution paths, verifies assumptions and catches
 potential failures before runtime.
 
-> **Status: early development.** Three analyzers are implemented: `nilptr`
+> **Status: early development.** Four analyzers are implemented: `nilptr`
 > reports dereferences of pointers that are provably nil, `divzero` reports
-> integer division or modulo by a divisor that is provably zero, and `bounds`
-> reports indexing or slicing that is provably out of range. Other analysis
-> rules are not implemented yet. A clean exit does not mean a program is safe.
+> integer division or modulo by a divisor that is provably zero, `bounds`
+> reports indexing or slicing that is provably out of range, and `assert`
+> reports type assertions that provably cannot succeed. Other analysis rules
+> are not implemented yet. A clean exit does not mean a program is safe.
 
 ## The problem
 
@@ -77,15 +78,17 @@ sheriff check ./...
 official analysis driver takes over. Package patterns and analysis flags are
 owned by the driver, so flags such as `-flags` and `-V=full` behave as usual.
 
-**Current behavior:** the `nilptr`, `divzero` and `bounds` analyzers are
-registered. They report dereferences of pointers that are provably nil, integer
-division or modulo by a divisor that is provably zero, and indexing or slicing
-that is provably out of range, for example:
+**Current behavior:** the `nilptr`, `divzero`, `bounds` and `assert` analyzers
+are registered. They report dereferences of pointers that are provably nil,
+integer division or modulo by a divisor that is provably zero, indexing or
+slicing that is provably out of range, and type assertions that provably cannot
+succeed, for example:
 
 ```text
 main.go:7:6: nil pointer dereference: p is nil
 main.go:5:10: division by zero: d is zero
 main.go:6:10: index out of range: index 3 for length 3
+main.go:9:10: impossible type assertion: r is *strings.Reader, not *bytes.Buffer
 ```
 
 The analyzers are conservative: when they cannot establish a value, they stay
@@ -146,6 +149,30 @@ multiple-value assignments, address-taken variables and closure-captured
 variables are treated as unknown. A missing diagnostic means the analyzer could
 not prove an out-of-range operation, not that the code is safe.
 
+### `assert`
+
+Reports single-value type assertions that provably cannot succeed. The compiler
+already rejects an assertion from an interface to a concrete type that does not
+implement it, so the analyzer targets the cases the compiler cannot see: a local
+interface variable whose concrete dynamic type is statically known and is
+incompatible with the asserted type.
+
+It tracks local interface variables through declarations and assignments,
+recording the concrete dynamic type stored in them. An assertion is reported
+when that dynamic type:
+
+- is not identical to the asserted concrete type; or
+- does not implement the asserted interface type.
+
+Only the single-value form `v := x.(T)` is reported, because the two-value form
+`v, ok := x.(T)` does not panic. Values whose dynamic type cannot be
+established (interface-typed right-hand sides, function results, and interface
+values reached through fields, maps or channels) are treated as unknown.
+Variables assigned in loops, address-taken variables, closure-captured variables
+and multiple-value assignments are treated as unknown. A missing diagnostic
+means the analyzer could not prove an impossible assertion, not that the code is
+safe.
+
 ## Architecture
 
 Sheriff builds on Go's official static-analysis infrastructure rather than a
@@ -173,10 +200,12 @@ The repository is intentionally small:
 sheriff/
 ├── cmd/sheriff/              executable entry point
 ├── internal/analyzer/        analyzer registration and coordination
+│   ├── assert/               impossible type assertion analyzer
 │   ├── bounds/               index and slice bounds analyzer
 │   ├── divzero/              division/modulo by zero analyzer
 │   └── nilptr/               nil pointer dereference analyzer
 ├── internal/reporting/       reserved for future diagnostic presentation
+├── testdata/src/assert/      analyzer fixtures
 ├── testdata/src/bounds/      analyzer fixtures
 ├── testdata/src/divzero/     analyzer fixtures
 ├── testdata/src/nilptr/      analyzer fixtures
@@ -204,11 +233,10 @@ can be revisited.
 
 ## Planned analysis directions
 
-These are directions, not current capabilities. `nilptr`, `divzero` and
-`bounds` are implemented; the remaining items are not. Panic-inducing paths are
-the first focus; the project is not limited to panics.
+These are directions, not current capabilities. `nilptr`, `divzero`, `bounds`
+and `assert` are implemented; the remaining items are not. Panic-inducing paths
+are the first focus; the project is not limited to panics.
 
-- Unsafe type assertions.
 - Invalid channel operations.
 - Explicit panic detection.
 - Assumption and invariant verification.
@@ -218,13 +246,14 @@ the first focus; the project is not limited to panics.
 
 ## Known limitations
 
-- The `nilptr`, `divzero` and `bounds` analyzers are implemented.
-- All three analyzers are intraprocedural and conservative. `nilptr` does not
+- The `nilptr`, `divzero`, `bounds` and `assert` analyzers are implemented.
+- All four analyzers are intraprocedural and conservative. `nilptr` does not
   track pointer values across function calls, interface values, maps, channels,
   function values or goroutines. `divzero` does not track package-level
   variables, values reached through pointers, function results or type
   parameters. `bounds` does not track capacities, loop induction values or
-  interprocedural lengths.
+  interprocedural lengths. `assert` does not track dynamic types across function
+  calls or through fields, maps, channels or type parameters.
 - Variables whose address is taken or that are captured by a closure are not
   tracked by any analyzer, even when they are never modified indirectly.
 - `nilptr` does not report nil interfaces, nil function calls, nil map writes or
@@ -234,6 +263,9 @@ the first focus; the project is not limited to panics.
 - `bounds` checks an explicit slice high bound against the length only for
   arrays and strings. For slices, bounds above the length but within the
   capacity are legal and are not reported.
+- `assert` reports only the single-value form, because the two-value form does
+  not panic. It does not report an assertion on a nil interface, which also
+  panics; that requires separate reasoning about nilness.
 - Sheriff reasons only about what its analyzers implement. Dynamic values,
   reflection, `unsafe` and long cross-package flows may remain beyond its
   reach.
