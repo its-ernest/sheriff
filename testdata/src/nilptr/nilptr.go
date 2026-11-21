@@ -1,5 +1,7 @@
 package nilptr
 
+import "encoding/json"
+
 type T struct {
 	Field int
 }
@@ -63,7 +65,7 @@ func mayAssign(cond bool) {
 	if cond {
 		p = &T{}
 	}
-	_ = p.Field
+	_ = p.Field // want `nil pointer dereference: p may be nil`
 }
 
 func bothAssign(cond bool) {
@@ -169,7 +171,7 @@ func loopAssignBeforeUse() {
 
 func loopPost(cond bool) {
 	var p *T
-	for i := 0; i < 1; consume(*p) {
+	for i := 0; i < 1; consume(*p) { // want `nil pointer dereference: p may be nil`
 		if cond {
 			p = &T{}
 		}
@@ -303,4 +305,129 @@ func unknownCallee(p *T) {
 
 func passUnknownThrough(p *T) {
 	unknownCallee(p)
+}
+
+func alwaysNil() *T { return nil }
+
+func callAlwaysNil() {
+	p := alwaysNil()
+	_ = p.Field // want `nil pointer dereference: p is nil`
+}
+
+func alwaysNonNil() *T { return &T{} }
+
+func callAlwaysNonNil() {
+	p := alwaysNonNil()
+	_ = p.Field
+}
+
+func maybeNilBranch(valid bool) *T {
+	if valid {
+		return &T{}
+	}
+	return nil
+}
+
+func callMaybeNilBranch() {
+	p := maybeNilBranch(true)
+	_ = p.Field // want `nil pointer dereference: p may be nil`
+}
+
+func propagateMaybeNil() *T {
+	return maybeNilBranch(false)
+}
+
+func callPropagateMaybeNil() {
+	p := propagateMaybeNil()
+	_ = p.Field // want `nil pointer dereference: p may be nil`
+}
+
+func namedResultNil() (p *T) {
+	return
+}
+
+func callNamedResultNil() {
+	p := namedResultNil()
+	_ = p.Field // want `nil pointer dereference: p is nil`
+}
+
+func namedResultSet() (p *T) {
+	p = &T{}
+	return
+}
+
+func callNamedResultSet() {
+	p := namedResultSet()
+	_ = p.Field
+}
+
+func unreachableReturn() *T {
+	return &T{}
+	return nil
+}
+
+func callUnreachableReturn() {
+	p := unreachableReturn()
+	_ = p.Field
+}
+
+func recursive(n int) *T {
+	if n <= 0 {
+		return nil
+	}
+	return recursive(n - 1)
+}
+
+func callRecursive() {
+	p := recursive(1)
+	_ = p.Field
+}
+
+func mutualA(n int) *T {
+	if n <= 0 {
+		return nil
+	}
+	return mutualB(n - 1)
+}
+
+func mutualB(n int) *T {
+	if n <= 0 {
+		return &T{}
+	}
+	return mutualA(n - 1)
+}
+
+func callMutual() {
+	p := mutualA(1)
+	_ = p.Field
+}
+
+func callUnknownSource(f func() *T) {
+	p := f()
+	_ = p.Field
+}
+
+type Request struct{ Body []byte }
+
+func bindConfig(req *Request) *T {
+	var cfg T
+	if err := json.Unmarshal(req.Body, &cfg); err != nil {
+		return nil
+	}
+	return &cfg
+}
+
+func prepareConfig(req *Request) *T {
+	cfg := bindConfig(req)
+	return cfg
+}
+
+func startServer(cfg *T) {
+	_ = cfg.Field // want `nil pointer dereference: cfg may be nil`
+}
+
+func integrationMalformedJSON() {
+	req := &Request{Body: []byte(`{"port": "invalid"}`)}
+	cfg := prepareConfig(req)
+	startServer(cfg)
 }

@@ -6,11 +6,11 @@ Sheriff identifies dangerous execution paths, verifies assumptions and catches
 potential failures before runtime.
 
 > **Status: early development.** Four analyzers are implemented: `nilptr`
-> reports dereferences of pointers that are provably nil, `divzero` reports
-> integer division or modulo by a divisor that is provably zero, `bounds`
-> reports indexing or slicing that is provably out of range, and `assert`
-> reports type assertions that provably cannot succeed. Other analysis rules
-> are not implemented yet. A clean exit does not mean a program is safe.
+> reports dereferences of pointers that are provably nil or possibly nil,
+> `divzero` reports integer division or modulo by a divisor that is provably
+> zero, `bounds` reports indexing or slicing that is provably out of range, and
+> `assert` reports type assertions that provably cannot succeed. Other analysis
+> rules are not implemented yet. A clean exit does not mean a program is safe.
 
 ## The problem
 
@@ -89,6 +89,7 @@ main.go:7:6: nil pointer dereference: p is nil
 main.go:5:10: division by zero: d is zero
 main.go:6:10: index out of range: index 3 for length 3
 main.go:9:10: impossible type assertion: r is *strings.Reader, not *bytes.Buffer
+main.go:12:5: nil pointer dereference: cfg may be nil
 ```
 
 The analyzers are conservative: when they cannot establish a value, they stay
@@ -105,14 +106,21 @@ selection through a nil pointer (`p.Field`), indexing or slicing a nil pointer
 to an array, and ranging over a nil pointer to an array.
 
 The analysis is intraprocedural and flow-sensitive for declarations,
-assignments, `if`/`else`, loop conditions and `switch` cases. It also follows
-values passed as arguments into same-package functions: a tracked argument is
-seeded into the callee's parameter and the callee body is analyzed, so a nil
-dereference on a parameter is reported at the callee. It does not reason through
-function values, methods, imported functions, interfaces, maps, channels or
-concurrent code, and it does not propagate transitively through nested calls.
-Variables whose address is taken or that are captured by a closure are treated
-as unknown.
+assignments, `if`/`else`, loop conditions and `switch` cases. It follows values
+across same-package function boundaries in two directions: tracked arguments are
+seeded into a callee's parameters, and a function's single pointer result is
+summarized from its reachable return statements and applied at its call sites.
+Because summaries are per function, nilness propagates transitively through
+chains of calls.
+
+Nilness is one of four states: nil, non-nil, **maybe nil** (a known possibility,
+for example a function with mixed return paths), or unknown (nilness could not be
+established). A dereference of a maybe-nil pointer is reported as a potential
+risk (`may be nil`); unknown values are not reported. Summaries are
+context-insensitive and recursive cycles yield unknown. The analyzer does not
+reason through function values, methods, imported functions, interfaces, maps,
+channels or concurrent code. Variables whose address is taken or that are
+captured by a closure are treated as unknown.
 
 A missing diagnostic means the analyzer could not prove a nil dereference, not
 that the code is safe.
@@ -261,14 +269,18 @@ are the first focus; the project is not limited to panics.
 - The `nilptr`, `divzero`, `bounds` and `assert` analyzers are implemented.
 - All four analyzers are conservative. They follow tracked values passed as
   arguments into same-package functions, seeding the callee's parameter and
-  analyzing its body, but only one level deep: they do not propagate
-  transitively through nested calls and do not resolve function values, methods
-  or imported functions. `nilptr` does not track pointer values through
-  interface values, maps, channels, function values or goroutines. `divzero`
-  does not track package-level variables, values reached through pointers,
-  function results or type parameters. `bounds` does not track capacities, loop
-  induction values or interprocedural lengths. `assert` does not track dynamic
-  types through fields, maps, channels or type parameters.
+  analyzing its body. `nilptr` also summarizes each function's single pointer
+  result from its reachable returns and applies that summary at call sites, so
+  nilness propagates transitively through same-package call chains; recursive
+  cycles and functions without a single pointer result yield unknown. None of
+  the analyzers resolve function values, methods or imported functions, and
+  their summaries are context-insensitive (a function that returns nil only on
+  some inputs is reported as maybe nil at every call). `nilptr` does not track
+  pointer values through interface values, maps, channels, function values or
+  goroutines. `divzero` does not track package-level variables, values reached
+  through pointers, function results or type parameters. `bounds` does not track
+  capacities, loop induction values or interprocedural lengths. `assert` does
+  not track dynamic types through fields, maps, channels or type parameters.
 - Variables whose address is taken or that are captured by a closure are not
   tracked by any analyzer, even when they are never modified indirectly.
 - `nilptr` does not report nil interfaces, nil function calls, nil map writes or

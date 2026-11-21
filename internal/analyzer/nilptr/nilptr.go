@@ -29,6 +29,10 @@ const (
 	unknown nilness = iota
 	isNil
 	nonNil
+	// maybeNil means the pointer may be nil or non-nil: for example a value
+	// produced by a function with mixed return paths. It is distinct from
+	// unknown, which means nilness could not be established at all.
+	maybeNil
 )
 
 type state map[*types.Var]nilness
@@ -39,13 +43,31 @@ type analyzer struct {
 	funcs    map[*types.Func]*ast.FuncDecl
 	reported map[token.Pos]bool
 	depth    int
+
+	// Return-value summaries for same-package functions. summaries caches the
+	// nilness of a function's single pointer result; computing guards against
+	// recursive summary computation.
+	summaries map[*types.Func]nilness
+	computing map[*types.Func]bool
+
+	// collect is non-nil while a function body is analyzed to compute its
+	// return summary; return statements append their result nilness to it.
+	collect    []nilness
+	collecting bool
+	// resultVar is the named single pointer result during summary computation,
+	// used to evaluate a bare return.
+	resultVar *types.Var
+	// suppress disables diagnostics while computing summaries.
+	suppress bool
 }
 
 func run(pass *analysis.Pass) (any, error) {
 	a := &analyzer{
-		pass:     pass,
-		funcs:    make(map[*types.Func]*ast.FuncDecl),
-		reported: make(map[token.Pos]bool),
+		pass:      pass,
+		funcs:     make(map[*types.Func]*ast.FuncDecl),
+		reported:  make(map[token.Pos]bool),
+		summaries: make(map[*types.Func]nilness),
+		computing: make(map[*types.Func]bool),
 	}
 	for _, file := range pass.Files {
 		for _, decl := range file.Decls {
@@ -269,6 +291,9 @@ func (a *analyzer) analyzeStmt(stmt ast.Stmt, s state) state {
 		for _, result := range st.Results {
 			a.analyzeExpr(result, s)
 		}
+		if a.collecting {
+			a.collect = append(a.collect, a.returnNilness(st, s))
+		}
 	case *ast.IfStmt:
 		return a.analyzeIf(st, s)
 	case *ast.BlockStmt:
@@ -352,8 +377,8 @@ func (a *analyzer) analyzeFor(st *ast.ForStmt, s state) state {
 }
 
 func (a *analyzer) analyzeRange(st *ast.RangeStmt, s state) state {
-	if isPointerToArray(a.typeOf(st.X)) && a.exprNilness(st.X, s) == isNil {
-		a.report(st.X.Pos(), st.X)
+	if isPointerToArray(a.typeOf(st.X)) {
+		a.reportNilness(st.X.Pos(), st.X, a.exprNilness(st.X, s))
 	}
 	a.analyzeExpr(st.X, s)
 
@@ -389,7 +414,21 @@ func (a *analyzer) analyzeSwitch(st *ast.SwitchStmt, s state) state {
 		a.analyzeExpr(st.Tag, s)
 	}
 
-	out := clone(s)
+	// Without a default clause, control can reach the statement after the
+	// switch without any case matching; that path keeps the pre-switch state.
+	// A default clause handles the no-match case instead, so it must not be
+	// merged in as an extra path.
+	hasDefault := false
+	for _, clause := range st.Body.List {
+		if cc, ok := clause.(*ast.CaseClause); ok && len(cc.List) == 0 {
+			hasDefault = true
+		}
+	}
+
+	var out state
+	if !hasDefault {
+		out = clone(s)
+	}
 	for _, clause := range st.Body.List {
 		cc, ok := clause.(*ast.CaseClause)
 		if !ok {
@@ -410,7 +449,15 @@ func (a *analyzer) analyzeSwitch(st *ast.SwitchStmt, s state) state {
 				continue
 			}
 		}
-		out = merge(out, a.analyzeStmtList(cc.Body, cs))
+		res := a.analyzeStmtList(cc.Body, cs)
+		if out == nil {
+			out = res
+		} else {
+			out = merge(out, res)
+		}
+	}
+	if out == nil {
+		out = clone(s)
 	}
 	return out
 }
@@ -457,7 +504,9 @@ func (a *analyzer) refineCase(st *ast.SwitchStmt, cc *ast.CaseClause, s state) b
 
 	tagState := s[tag]
 	caseState := a.caseNilness(cc, s)
-	if tagState != unknown && caseState != unknown && tagState != caseState {
+	// Only a definite mismatch proves the case unreachable. A maybeNil tag may
+	// still match a nil or non-nil case.
+	if definite(tagState) && definite(caseState) && tagState != caseState {
 		return false
 	}
 	// If the tag is nil and the case may or may not match nil, do not claim
@@ -665,9 +714,7 @@ func (a *analyzer) analyzeExpr(expr ast.Expr, s state) {
 }
 
 func (a *analyzer) checkDeref(ptr ast.Expr, pos token.Pos, s state) {
-	if a.exprNilness(ptr, s) == isNil {
-		a.report(pos, ptr)
-	}
+	a.reportNilness(pos, ptr, a.exprNilness(ptr, s))
 }
 
 func (a *analyzer) checkField(sel *ast.SelectorExpr, s state) {
@@ -675,35 +722,41 @@ func (a *analyzer) checkField(sel *ast.SelectorExpr, s state) {
 	if !ok || selection.Kind() != types.FieldVal {
 		return
 	}
-	if a.exprNilness(sel.X, s) == isNil {
-		a.report(sel.Pos(), sel.X)
-	}
+	a.reportNilness(sel.Pos(), sel.X, a.exprNilness(sel.X, s))
 }
 
 func (a *analyzer) checkPointerArrayIndex(index *ast.IndexExpr, s state) {
 	if !isPointerToArray(a.typeOf(index.X)) {
 		return
 	}
-	if a.exprNilness(index.X, s) == isNil {
-		a.report(index.Pos(), index.X)
-	}
+	a.reportNilness(index.Pos(), index.X, a.exprNilness(index.X, s))
 }
 
 func (a *analyzer) checkPointerArraySlice(slice *ast.SliceExpr, s state) {
 	if !isPointerToArray(a.typeOf(slice.X)) {
 		return
 	}
-	if a.exprNilness(slice.X, s) == isNil {
-		a.report(slice.Pos(), slice.X)
+	a.reportNilness(slice.Pos(), slice.X, a.exprNilness(slice.X, s))
+}
+
+// reportNilness reports a dereference according to the pointer's nilness: a
+// definite nil is a definite finding, while maybeNil is a potential-risk
+// finding. unknown is not reported.
+func (a *analyzer) reportNilness(pos token.Pos, ptr ast.Expr, n nilness) {
+	switch n {
+	case isNil:
+		a.reportf(pos, "nil pointer dereference: %s is nil", types.ExprString(ptr))
+	case maybeNil:
+		a.reportf(pos, "nil pointer dereference: %s may be nil", types.ExprString(ptr))
 	}
 }
 
-func (a *analyzer) report(pos token.Pos, ptr ast.Expr) {
-	if a.reported[pos] {
+func (a *analyzer) reportf(pos token.Pos, format string, args ...any) {
+	if a.suppress || a.reported[pos] {
 		return
 	}
 	a.reported[pos] = true
-	a.pass.Reportf(pos, "nil pointer dereference: %s is nil", types.ExprString(ptr))
+	a.pass.Reportf(pos, format, args...)
 }
 
 func (a *analyzer) exprNilness(expr ast.Expr, s state) nilness {
@@ -730,6 +783,9 @@ func (a *analyzer) exprNilness(expr ast.Expr, s state) nilness {
 		}
 		if a.isNilConversion(e) {
 			return isNil
+		}
+		if fn := a.calleeFunc(e); fn != nil {
+			return a.summaryOf(fn)
 		}
 	}
 	return unknown
@@ -896,20 +952,124 @@ func clone(s state) state {
 	return out
 }
 
+// join combines two nilness facts known on different control-flow paths. A
+// definite isNil and nonNil combine to maybeNil; unknown dominates because it
+// means nilness could not be established.
+func join(x, y nilness) nilness {
+	if x == y {
+		return x
+	}
+	if x == unknown || y == unknown {
+		return unknown
+	}
+	if x == maybeNil || y == maybeNil {
+		return maybeNil
+	}
+	return maybeNil
+}
+
 func merge(a, b state) state {
 	out := clone(a)
 	for v, bn := range b {
 		an, ok := out[v]
-		if !ok || an != bn {
-			out[v] = unknown
+		if !ok {
+			an = unknown
 		}
+		out[v] = join(an, bn)
 	}
 	for v, an := range a {
-		if _, ok := b[v]; !ok && an != unknown {
-			out[v] = unknown
+		if _, ok := b[v]; !ok {
+			out[v] = join(an, unknown)
 		}
 	}
 	return out
+}
+
+func joinNilness(vals []nilness) nilness {
+	if len(vals) == 0 {
+		return unknown
+	}
+	out := vals[0]
+	for _, v := range vals[1:] {
+		out = join(out, v)
+	}
+	return out
+}
+
+func definite(n nilness) bool {
+	return n == isNil || n == nonNil
+}
+
+// pointerResult reports the single pointer result of a function signature, if
+// it has exactly one.
+func pointerResult(fn *types.Func) (*types.Var, bool) {
+	sig, ok := fn.Type().(*types.Signature)
+	if !ok || sig.Results() == nil || sig.Results().Len() != 1 {
+		return nil, false
+	}
+	v := sig.Results().At(0)
+	if !isPointer(v.Type()) {
+		return nil, false
+	}
+	return v, true
+}
+
+// summaryOf returns the nilness of a function's single pointer result, computed
+// from its reachable return statements. Results are cached. Diagnostics are
+// suppressed and interprocedural argument seeding is disabled while a summary
+// is computed; recursive cycles yield unknown.
+func (a *analyzer) summaryOf(fn *types.Func) nilness {
+	if n, ok := a.summaries[fn]; ok {
+		return n
+	}
+	if a.computing[fn] {
+		return unknown
+	}
+	decl := a.funcs[fn]
+	resultVar, ok := pointerResult(fn)
+	if decl == nil || decl.Body == nil || !ok {
+		a.summaries[fn] = unknown
+		return unknown
+	}
+
+	prevSuppress := a.suppress
+	prevDepth := a.depth
+	prevCollect := a.collect
+	prevCollecting := a.collecting
+	prevResult := a.resultVar
+
+	a.computing[fn] = true
+	a.suppress = true
+	a.depth++
+	a.collect = nil
+	a.collecting = true
+	a.resultVar = resultVar
+
+	a.analyzeFuncSeed(decl.Type, decl.Body, nil)
+	returns := a.collect
+
+	a.collect = prevCollect
+	a.collecting = prevCollecting
+	a.resultVar = prevResult
+	a.depth = prevDepth
+	a.suppress = prevSuppress
+	delete(a.computing, fn)
+
+	n := joinNilness(returns)
+	a.summaries[fn] = n
+	return n
+}
+
+// returnNilness evaluates the nilness produced by a return statement for a
+// single pointer result. A bare return uses the named result's current value.
+func (a *analyzer) returnNilness(st *ast.ReturnStmt, s state) nilness {
+	if len(st.Results) == 1 {
+		return a.exprNilness(st.Results[0], s)
+	}
+	if len(st.Results) == 0 && a.resultVar != nil && a.resultVar.Name() != "" {
+		return s[a.resultVar]
+	}
+	return unknown
 }
 
 func unparen(expr ast.Expr) ast.Expr {
