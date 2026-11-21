@@ -284,4 +284,4 @@ contribution instructions.
 
 Sheriff is licensed under the [Apache License 2.0](LICENSE).
 
-Copyright 2026 Ernest, [@its-ernest](https://github.com/its-ernest).
+Copyright 2026 [@its-ernest](https://github.com/its-ernest).
