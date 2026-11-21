@@ -235,3 +235,72 @@ func shadowedNil() {
 	nil := &T{}
 	_ = nil.Field
 }
+
+func derefParam(p *T) {
+	_ = *p // want `nil pointer dereference: p is nil`
+}
+
+func callDerefParamWithNil() {
+	var p *T
+	derefParam(p)
+}
+
+func callDerefParamWithNonNil() {
+	p := &T{}
+	derefParam(p)
+}
+
+func callDerefParamWithLiteralNil() {
+	derefParam(nil)
+}
+
+func callBeforeDecl() {
+	var p *T
+	laterDefined(p)
+}
+
+func laterDefined(p *T) {
+	_ = *p // want `nil pointer dereference: p is nil`
+}
+
+func fieldParam(p *T) {
+	_ = p.Field // want `nil pointer dereference: p is nil`
+}
+
+func callFieldParamWithNil() {
+	var p *T
+	fieldParam(p)
+}
+
+func safeCallee(p *T) {
+	_ = *p
+}
+
+func callSafeCallee() {
+	p := &T{}
+	safeCallee(p)
+}
+
+func guardedCallee(p *T) {
+	if p != nil {
+		_ = *p
+	}
+}
+
+func callGuardedCalleeWithNil() {
+	var p *T
+	guardedCallee(p)
+}
+
+func callGuardedCalleeWithNonNil() {
+	p := &T{}
+	guardedCallee(p)
+}
+
+func unknownCallee(p *T) {
+	_ = *p
+}
+
+func passUnknownThrough(p *T) {
+	unknownCallee(p)
+}

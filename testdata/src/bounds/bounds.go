@@ -263,3 +263,32 @@ func threeIndexSliceWithinCapacity() {
 func sliceUnknown(s []int, low int) {
 	_ = s[low:]
 }
+
+func indexWithParam(i int) {
+	var a [3]int
+	_ = a[i] // want `index out of range: index 3 for length 3`
+}
+
+func callIndexWithParamOutOfRange() {
+	i := 3
+	indexWithParam(i)
+}
+
+func callIndexWithParamInRange() {
+	i := 2
+	indexWithParam(i)
+}
+
+func indexSliceParam(s []int) {
+	_ = s[0] // want `index out of range: index 0 for length 0`
+}
+
+func callIndexSliceParamEmpty() {
+	var s []int
+	indexSliceParam(s)
+}
+
+func callIndexSliceParamNonEmpty() {
+	s := make([]int, 2)
+	indexSliceParam(s)
+}

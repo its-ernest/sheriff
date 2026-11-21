@@ -131,3 +131,43 @@ func concreteShadowing() {
 	}
 	_ = r.(fooer) // want `impossible type assertion: r is \*strings\.Reader, which does not implement fooer`
 }
+
+func assertParam(r io.Reader) {
+	_ = r.(*bytes.Buffer) // want `impossible type assertion: r is \*strings\.Reader, not \*bytes\.Buffer`
+}
+
+func callAssertParamWithReader() {
+	var r io.Reader = strings.NewReader("x")
+	assertParam(r)
+}
+
+func callAssertParamWithBuffer() {
+	var r io.Reader = bytes.NewBuffer(nil)
+	assertParam(r)
+}
+
+func assertInterfaceParam(r io.Reader) {
+	_ = r.(fooer) // want `impossible type assertion: r is \*strings\.Reader, which does not implement fooer`
+}
+
+func callAssertInterfaceParam() {
+	var r io.Reader = strings.NewReader("x")
+	assertInterfaceParam(r)
+}
+
+func assertParamOK(r io.Reader) {
+	_ = r.(*strings.Reader)
+}
+
+func callAssertParamOK() {
+	var r io.Reader = strings.NewReader("x")
+	assertParamOK(r)
+}
+
+func assertUnknownCallee(r io.Reader) {
+	_ = r.(*bytes.Buffer)
+}
+
+func passUnknownAssert(r io.Reader) {
+	assertUnknownCallee(r)
+}

@@ -31,12 +31,30 @@ type state struct {
 }
 
 type analyzer struct {
-	pass    *analysis.Pass
-	escaped map[*types.Var]struct{}
+	pass     *analysis.Pass
+	escaped  map[*types.Var]struct{}
+	funcs    map[*types.Func]*ast.FuncDecl
+	reported map[token.Pos]bool
+	depth    int
 }
 
 func run(pass *analysis.Pass) (any, error) {
-	a := &analyzer{pass: pass}
+	a := &analyzer{
+		pass:     pass,
+		funcs:    make(map[*types.Func]*ast.FuncDecl),
+		reported: make(map[token.Pos]bool),
+	}
+	for _, file := range pass.Files {
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil || fn.Recv != nil {
+				continue
+			}
+			if obj, ok := pass.TypesInfo.Defs[fn.Name].(*types.Func); ok {
+				a.funcs[obj] = fn
+			}
+		}
+	}
 	for _, file := range pass.Files {
 		ast.Inspect(file, func(n ast.Node) bool {
 			switch fn := n.(type) {
@@ -54,10 +72,125 @@ func run(pass *analysis.Pass) (any, error) {
 }
 
 func (a *analyzer) analyzeFunc(ft *ast.FuncType, body *ast.BlockStmt) {
+	a.analyzeFuncSeed(ft, body, nil)
+}
+
+// analyzeFuncSeed analyzes a function body with an optional seed state. The
+// seed supplies known integer and length values for parameters, which is how
+// tracked argument values are propagated from a call site into a same-package
+// callee.
+func (a *analyzer) analyzeFuncSeed(ft *ast.FuncType, body *ast.BlockStmt, seed *state) {
+	prevEscaped := a.escaped
 	a.escaped = a.findEscaped(body)
 	s := newState()
+	if seed != nil {
+		for v, n := range seed.ints {
+			s.ints[v] = n
+		}
+		for v, n := range seed.lens {
+			s.lens[v] = n
+		}
+	}
 	a.initResults(ft, s)
 	a.analyzeBlock(body, s)
+	a.escaped = prevEscaped
+}
+
+// propagateCall analyzes a same-package callee with the tracked argument
+// values seeded into its integer and sequence parameters, so indexing or
+// slicing a parameter is reported even though the callee is a separate
+// function. It runs only at the top level so that analysis does not recurse
+// transitively through nested calls.
+func (a *analyzer) propagateCall(call *ast.CallExpr, s *state) {
+	if a.depth > 0 {
+		return
+	}
+	fn := a.calleeFunc(call)
+	if fn == nil {
+		return
+	}
+	decl := a.funcs[fn]
+	if decl == nil || decl.Body == nil {
+		return
+	}
+	params := a.paramVars(fn)
+	if len(params) == 0 {
+		return
+	}
+	seed := newState()
+	seeded := false
+	for i, arg := range call.Args {
+		if i >= len(params) {
+			break
+		}
+		p := params[i]
+		if p == nil {
+			continue
+		}
+		pt := p.Type()
+		if isInteger(pt) {
+			if v, ok := a.exprInt(arg, s); ok {
+				seed.ints[p] = v
+				seeded = true
+			}
+			continue
+		}
+		if isSequenceVar(pt) {
+			if n, ok := a.exprLen(arg, s); ok {
+				seed.lens[p] = n
+				seeded = true
+			}
+		}
+	}
+	if !seeded {
+		return
+	}
+	a.depth++
+	a.analyzeFuncSeed(decl.Type, decl.Body, seed)
+	a.depth--
+}
+
+// calleeFunc resolves a direct call to a package-level function declared in the
+// analyzed package. Calls through function values, methods and imported
+// functions are not resolved.
+func (a *analyzer) calleeFunc(call *ast.CallExpr) *types.Func {
+	id, ok := unparen(call.Fun).(*ast.Ident)
+	if !ok {
+		return nil
+	}
+	fn, _ := a.pass.TypesInfo.Uses[id].(*types.Func)
+	if fn == nil || fn.Pkg() != a.pass.Pkg {
+		return nil
+	}
+	sig, ok := fn.Type().(*types.Signature)
+	if !ok || sig.Recv() != nil {
+		return nil
+	}
+	return fn
+}
+
+func (a *analyzer) paramVars(fn *types.Func) []*types.Var {
+	sig, ok := fn.Type().(*types.Signature)
+	if !ok {
+		return nil
+	}
+	params := sig.Params()
+	vars := make([]*types.Var, params.Len())
+	for i := range vars {
+		vars[i] = params.At(i)
+	}
+	return vars
+}
+
+// reportf reports a diagnostic at pos unless one was already reported there,
+// which keeps diagnostics unique when a callee is analyzed from several call
+// sites.
+func (a *analyzer) reportf(pos token.Pos, format string, args ...any) {
+	if a.reported[pos] {
+		return
+	}
+	a.reported[pos] = true
+	a.pass.Reportf(pos, format, args...)
 }
 
 // findEscaped identifies local variables whose value can change without an
@@ -447,6 +580,7 @@ func (a *analyzer) analyzeExpr(expr ast.Expr, s *state) {
 		for _, arg := range e.Args {
 			a.analyzeExpr(arg, s)
 		}
+		a.propagateCall(e, s)
 	case *ast.TypeAssertExpr:
 		a.analyzeExpr(e.X, s)
 	case *ast.CompositeLit:
@@ -475,7 +609,7 @@ func (a *analyzer) checkIndex(e *ast.IndexExpr, s *state) {
 		return
 	}
 	if idx < 0 || idx >= n {
-		a.pass.Reportf(e.Pos(), "index out of range: index %s for length %d", v.String(), n)
+		a.reportf(e.Pos(), "index out of range: index %s for length %d", v.String(), n)
 	}
 }
 
@@ -490,11 +624,11 @@ func (a *analyzer) checkSlice(e *ast.SliceExpr, s *state) {
 	high, hasHigh := a.constInt64(e.High, s)
 
 	if hasLow && low < 0 {
-		a.pass.Reportf(e.Pos(), "slice bounds out of range: low index %d is negative", low)
+		a.reportf(e.Pos(), "slice bounds out of range: low index %d is negative", low)
 		return
 	}
 	if hasHigh && high < 0 {
-		a.pass.Reportf(e.Pos(), "slice bounds out of range: high index %d is negative", high)
+		a.reportf(e.Pos(), "slice bounds out of range: high index %d is negative", high)
 		return
 	}
 
@@ -503,25 +637,25 @@ func (a *analyzer) checkSlice(e *ast.SliceExpr, s *state) {
 		high, hasHigh = n, true
 	}
 	if hasLow && hasHigh && low > high {
-		a.pass.Reportf(e.Pos(), "slice bounds out of range: low index %d is greater than high index %d", low, high)
+		a.reportf(e.Pos(), "slice bounds out of range: low index %d is greater than high index %d", low, high)
 		return
 	}
 
 	// For slices an explicit high bound may extend up to the capacity, which
 	// is not tracked. Arrays and strings are bounded by their length.
 	if kind != seqSlice && hasLen && hasHigh && high > n {
-		a.pass.Reportf(e.Pos(), "slice bounds out of range: high index %d is greater than length %d", high, n)
+		a.reportf(e.Pos(), "slice bounds out of range: high index %d is greater than length %d", high, n)
 		return
 	}
 
 	if e.Max != nil {
 		max, hasMax := a.constInt64(e.Max, s)
 		if hasMax && hasHigh && max < high {
-			a.pass.Reportf(e.Pos(), "slice bounds out of range: max index %d is less than high index %d", max, high)
+			a.reportf(e.Pos(), "slice bounds out of range: max index %d is less than high index %d", max, high)
 			return
 		}
 		if hasMax && hasLen && kind == seqArray && max > n {
-			a.pass.Reportf(e.Pos(), "slice bounds out of range: max index %d is greater than length %d", max, n)
+			a.reportf(e.Pos(), "slice bounds out of range: max index %d is greater than length %d", max, n)
 		}
 	}
 }

@@ -105,10 +105,14 @@ selection through a nil pointer (`p.Field`), indexing or slicing a nil pointer
 to an array, and ranging over a nil pointer to an array.
 
 The analysis is intraprocedural and flow-sensitive for declarations,
-assignments, `if`/`else`, loop conditions and `switch` cases. It does not reason
-across function boundaries, through interfaces, maps, channels, function values
-or concurrent code. Variables whose address is taken or that are captured by a
-closure are treated as unknown.
+assignments, `if`/`else`, loop conditions and `switch` cases. It also follows
+values passed as arguments into same-package functions: a tracked argument is
+seeded into the callee's parameter and the callee body is analyzed, so a nil
+dereference on a parameter is reported at the callee. It does not reason through
+function values, methods, imported functions, interfaces, maps, channels or
+concurrent code, and it does not propagate transitively through nested calls.
+Variables whose address is taken or that are captured by a closure are treated
+as unknown.
 
 A missing diagnostic means the analyzer could not prove a nil dereference, not
 that the code is safe.
@@ -121,8 +125,11 @@ division are ignored because they do not panic.
 
 Like `nilptr`, the analysis is intraprocedural and flow-sensitive for
 declarations, assignments, zero comparisons, `if`/`else`, loops and `switch`
-cases. Constant expressions are evaluated through `go/types`. Variables whose
-address is taken or that are captured by a closure are treated as unknown.
+cases. It also follows integer arguments into same-package functions: a tracked
+divisor argument is seeded into the callee's parameter, so a division by a
+parameter is reported at the callee. Constant expressions are evaluated through
+`go/types`. Variables whose address is taken or that are captured by a closure
+are treated as unknown.
 
 The analyzer does not track package-level variables, values reached through
 pointers, function results, type parameters or interprocedural flow. A missing
@@ -144,10 +151,13 @@ known length, string constants, and reslices of those values. It checks:
   bounds beyond an array or string length.
 
 For slices an explicit high bound may extend up to the capacity, which is not
-tracked, so only provable violations are reported. Values assigned in loops,
-multiple-value assignments, address-taken variables and closure-captured
-variables are treated as unknown. A missing diagnostic means the analyzer could
-not prove an out-of-range operation, not that the code is safe.
+tracked, so only provable violations are reported. It also follows integer and
+sequence arguments into same-package functions: a tracked index or a known
+length is seeded into the callee's parameter, so an out-of-range operation on a
+parameter is reported at the callee. Values assigned in loops, multiple-value
+assignments, address-taken variables and closure-captured variables are treated
+as unknown. A missing diagnostic means the analyzer could not prove an
+out-of-range operation, not that the code is safe.
 
 ### `assert`
 
@@ -165,13 +175,15 @@ when that dynamic type:
 - does not implement the asserted interface type.
 
 Only the single-value form `v := x.(T)` is reported, because the two-value form
-`v, ok := x.(T)` does not panic. Values whose dynamic type cannot be
-established (interface-typed right-hand sides, function results, and interface
-values reached through fields, maps or channels) are treated as unknown.
-Variables assigned in loops, address-taken variables, closure-captured variables
-and multiple-value assignments are treated as unknown. A missing diagnostic
-means the analyzer could not prove an impossible assertion, not that the code is
-safe.
+`v, ok := x.(T)` does not panic. It also follows interface arguments into
+same-package functions: a tracked dynamic type is seeded into the callee's
+parameter, so an impossible assertion on a parameter is reported at the callee.
+Values whose dynamic type cannot be established (interface-typed right-hand
+sides, function results, and interface values reached through fields, maps or
+channels) are treated as unknown. Variables assigned in loops, address-taken
+variables, closure-captured variables and multiple-value assignments are treated
+as unknown. A missing diagnostic means the analyzer could not prove an
+impossible assertion, not that the code is safe.
 
 ## Architecture
 
@@ -247,13 +259,16 @@ are the first focus; the project is not limited to panics.
 ## Known limitations
 
 - The `nilptr`, `divzero`, `bounds` and `assert` analyzers are implemented.
-- All four analyzers are intraprocedural and conservative. `nilptr` does not
-  track pointer values across function calls, interface values, maps, channels,
-  function values or goroutines. `divzero` does not track package-level
-  variables, values reached through pointers, function results or type
-  parameters. `bounds` does not track capacities, loop induction values or
-  interprocedural lengths. `assert` does not track dynamic types across function
-  calls or through fields, maps, channels or type parameters.
+- All four analyzers are conservative. They follow tracked values passed as
+  arguments into same-package functions, seeding the callee's parameter and
+  analyzing its body, but only one level deep: they do not propagate
+  transitively through nested calls and do not resolve function values, methods
+  or imported functions. `nilptr` does not track pointer values through
+  interface values, maps, channels, function values or goroutines. `divzero`
+  does not track package-level variables, values reached through pointers,
+  function results or type parameters. `bounds` does not track capacities, loop
+  induction values or interprocedural lengths. `assert` does not track dynamic
+  types through fields, maps, channels or type parameters.
 - Variables whose address is taken or that are captured by a closure are not
   tracked by any analyzer, even when they are never modified indirectly.
 - `nilptr` does not report nil interfaces, nil function calls, nil map writes or

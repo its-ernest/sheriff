@@ -36,12 +36,30 @@ const (
 type state map[*types.Var]zeroState
 
 type analyzer struct {
-	pass    *analysis.Pass
-	escaped map[*types.Var]struct{}
+	pass     *analysis.Pass
+	escaped  map[*types.Var]struct{}
+	funcs    map[*types.Func]*ast.FuncDecl
+	reported map[token.Pos]bool
+	depth    int
 }
 
 func run(pass *analysis.Pass) (any, error) {
-	a := &analyzer{pass: pass}
+	a := &analyzer{
+		pass:     pass,
+		funcs:    make(map[*types.Func]*ast.FuncDecl),
+		reported: make(map[token.Pos]bool),
+	}
+	for _, file := range pass.Files {
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil || fn.Recv != nil {
+				continue
+			}
+			if obj, ok := pass.TypesInfo.Defs[fn.Name].(*types.Func); ok {
+				a.funcs[obj] = fn
+			}
+		}
+	}
 	for _, file := range pass.Files {
 		ast.Inspect(file, func(n ast.Node) bool {
 			switch fn := n.(type) {
@@ -59,10 +77,100 @@ func run(pass *analysis.Pass) (any, error) {
 }
 
 func (a *analyzer) analyzeFunc(ft *ast.FuncType, body *ast.BlockStmt) {
+	a.analyzeFuncSeed(ft, body, nil)
+}
+
+// analyzeFuncSeed analyzes a function body with an optional seed state. The
+// seed supplies known values for parameters, which is how tracked argument
+// values are propagated from a call site into a same-package callee.
+func (a *analyzer) analyzeFuncSeed(ft *ast.FuncType, body *ast.BlockStmt, seed state) {
+	prevEscaped := a.escaped
 	a.escaped = a.findEscaped(body)
-	s := make(state)
+	s := make(state, len(seed))
+	for v, n := range seed {
+		s[v] = n
+	}
 	a.initResults(ft, s)
 	a.analyzeBlock(body, s)
+	a.escaped = prevEscaped
+}
+
+// propagateCall analyzes a same-package callee with the tracked argument
+// values seeded into its integer parameters, so a division or modulo by a
+// parameter is reported even though the callee is a separate function. It runs
+// only at the top level so that analysis does not recurse transitively through
+// nested calls.
+func (a *analyzer) propagateCall(call *ast.CallExpr, s state) {
+	if a.depth > 0 {
+		return
+	}
+	fn := a.calleeFunc(call)
+	if fn == nil {
+		return
+	}
+	decl := a.funcs[fn]
+	if decl == nil || decl.Body == nil {
+		return
+	}
+	params := a.paramVars(fn)
+	if len(params) == 0 {
+		return
+	}
+	seed := make(state)
+	seeded := false
+	for i, arg := range call.Args {
+		if i >= len(params) {
+			break
+		}
+		p := params[i]
+		if p == nil || !isInteger(p.Type()) {
+			continue
+		}
+		n := a.exprZero(arg, s)
+		if n == unknown {
+			continue
+		}
+		seed[p] = n
+		seeded = true
+	}
+	if !seeded {
+		return
+	}
+	a.depth++
+	a.analyzeFuncSeed(decl.Type, decl.Body, seed)
+	a.depth--
+}
+
+// calleeFunc resolves a direct call to a package-level function declared in the
+// analyzed package. Calls through function values, methods and imported
+// functions are not resolved.
+func (a *analyzer) calleeFunc(call *ast.CallExpr) *types.Func {
+	id, ok := unparen(call.Fun).(*ast.Ident)
+	if !ok {
+		return nil
+	}
+	fn, _ := a.pass.TypesInfo.Uses[id].(*types.Func)
+	if fn == nil || fn.Pkg() != a.pass.Pkg {
+		return nil
+	}
+	sig, ok := fn.Type().(*types.Signature)
+	if !ok || sig.Recv() != nil {
+		return nil
+	}
+	return fn
+}
+
+func (a *analyzer) paramVars(fn *types.Func) []*types.Var {
+	sig, ok := fn.Type().(*types.Signature)
+	if !ok {
+		return nil
+	}
+	params := sig.Params()
+	vars := make([]*types.Var, params.Len())
+	for i := range vars {
+		vars[i] = params.At(i)
+	}
+	return vars
 }
 
 // findEscaped identifies local variables that can change without an explicit
@@ -526,6 +634,7 @@ func (a *analyzer) analyzeExpr(expr ast.Expr, s state) {
 		for _, arg := range e.Args {
 			a.analyzeExpr(arg, s)
 		}
+		a.propagateCall(e, s)
 	case *ast.TypeAssertExpr:
 		a.analyzeExpr(e.X, s)
 	case *ast.CompositeLit:
@@ -548,6 +657,10 @@ func (a *analyzer) checkDivisor(op token.Token, divisor ast.Expr, pos token.Pos,
 	if op == token.REM || op == token.REM_ASSIGN {
 		kind = "modulo"
 	}
+	if a.reported[pos] {
+		return
+	}
+	a.reported[pos] = true
 	a.pass.Reportf(pos, "%s by zero: %s is zero", kind, types.ExprString(divisor))
 }
 

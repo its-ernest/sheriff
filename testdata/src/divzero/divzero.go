@@ -261,3 +261,50 @@ func divisionInComposite() {
 	d := 0
 	_ = []int{10 / d} // want `division by zero: d is zero`
 }
+
+func divideByParam(d int) int {
+	return 10 / d // want `division by zero: d is zero`
+}
+
+func callDivideByParamWithZero() {
+	d := 0
+	divideByParam(d)
+}
+
+func callDivideByParamWithNonZero() {
+	d := 2
+	divideByParam(d)
+}
+
+func callDivideByParamLiteralZero() {
+	divideByParam(0)
+}
+
+func safeDivideCallee(d int) int {
+	return 10 / d
+}
+
+func callSafeDivideCallee() {
+	d := 2
+	safeDivideCallee(d)
+}
+
+func guardedDivideCallee(d int) int {
+	if d != 0 {
+		return 10 / d
+	}
+	return 0
+}
+
+func callGuardedDivideCalleeWithZero() {
+	d := 0
+	guardedDivideCallee(d)
+}
+
+func unknownDivideCallee(d int) int {
+	return 10 / d
+}
+
+func passUnknownDivide(d int) {
+	unknownDivideCallee(d)
+}
