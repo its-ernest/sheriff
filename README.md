@@ -5,9 +5,10 @@
 Sheriff identifies dangerous execution paths, verifies assumptions and catches
 potential failures before runtime.
 
-> **Status: early development.** Two analyzers are implemented: `nilptr`
-> reports dereferences of pointers that are provably nil, and `divzero` reports
-> integer division or modulo by a divisor that is provably zero. Other analysis
+> **Status: early development.** Three analyzers are implemented: `nilptr`
+> reports dereferences of pointers that are provably nil, `divzero` reports
+> integer division or modulo by a divisor that is provably zero, and `bounds`
+> reports indexing or slicing that is provably out of range. Other analysis
 > rules are not implemented yet. A clean exit does not mean a program is safe.
 
 ## The problem
@@ -76,13 +77,15 @@ sheriff check ./...
 official analysis driver takes over. Package patterns and analysis flags are
 owned by the driver, so flags such as `-flags` and `-V=full` behave as usual.
 
-**Current behavior:** the `nilptr` and `divzero` analyzers are registered. They
-report dereferences of pointers that are provably nil and integer division or
-modulo by a divisor that is provably zero, for example:
+**Current behavior:** the `nilptr`, `divzero` and `bounds` analyzers are
+registered. They report dereferences of pointers that are provably nil, integer
+division or modulo by a divisor that is provably zero, and indexing or slicing
+that is provably out of range, for example:
 
 ```text
 main.go:7:6: nil pointer dereference: p is nil
 main.go:5:10: division by zero: d is zero
+main.go:6:10: index out of range: index 3 for length 3
 ```
 
 The analyzers are conservative: when they cannot establish a value, they stay
@@ -122,6 +125,27 @@ The analyzer does not track package-level variables, values reached through
 pointers, function results, type parameters or interprocedural flow. A missing
 diagnostic means it could not prove a zero divisor, not that the code is safe.
 
+### `bounds`
+
+Reports indexing and slicing that is provably out of range. Constant indices
+that are out of range are already rejected by the compiler, so the analyzer
+focuses on values established by local flow, for example an index variable
+assigned `len(a)` and then used to index `a`.
+
+It tracks local integer variables whose value is a constant, including `len` of
+an array, and the length of local arrays, slice literals, `make` calls with a
+known length, string constants, and reslices of those values. It checks:
+
+- indexing an array, pointer to array, slice or string;
+- two- and three-index slicing, including negative bounds, `low > high` and
+  bounds beyond an array or string length.
+
+For slices an explicit high bound may extend up to the capacity, which is not
+tracked, so only provable violations are reported. Values assigned in loops,
+multiple-value assignments, address-taken variables and closure-captured
+variables are treated as unknown. A missing diagnostic means the analyzer could
+not prove an out-of-range operation, not that the code is safe.
+
 ## Architecture
 
 Sheriff builds on Go's official static-analysis infrastructure rather than a
@@ -149,9 +173,11 @@ The repository is intentionally small:
 sheriff/
 ├── cmd/sheriff/              executable entry point
 ├── internal/analyzer/        analyzer registration and coordination
+│   ├── bounds/               index and slice bounds analyzer
 │   ├── divzero/              division/modulo by zero analyzer
 │   └── nilptr/               nil pointer dereference analyzer
 ├── internal/reporting/       reserved for future diagnostic presentation
+├── testdata/src/bounds/      analyzer fixtures
 ├── testdata/src/divzero/     analyzer fixtures
 ├── testdata/src/nilptr/      analyzer fixtures
 ├── README.md
@@ -178,11 +204,10 @@ can be revisited.
 
 ## Planned analysis directions
 
-These are directions, not current capabilities. `nilptr` and `divzero` are
-implemented; the remaining items are not. Panic-inducing paths are the first
-focus; the project is not limited to panics.
+These are directions, not current capabilities. `nilptr`, `divzero` and
+`bounds` are implemented; the remaining items are not. Panic-inducing paths are
+the first focus; the project is not limited to panics.
 
-- Slice and array bounds.
 - Unsafe type assertions.
 - Invalid channel operations.
 - Explicit panic detection.
@@ -193,18 +218,22 @@ focus; the project is not limited to panics.
 
 ## Known limitations
 
-- The `nilptr` and `divzero` analyzers are implemented.
-- Both analyzers are intraprocedural and conservative. `nilptr` does not track
-  pointer values across function calls, interface values, maps, channels,
+- The `nilptr`, `divzero` and `bounds` analyzers are implemented.
+- All three analyzers are intraprocedural and conservative. `nilptr` does not
+  track pointer values across function calls, interface values, maps, channels,
   function values or goroutines. `divzero` does not track package-level
   variables, values reached through pointers, function results or type
-  parameters.
+  parameters. `bounds` does not track capacities, loop induction values or
+  interprocedural lengths.
 - Variables whose address is taken or that are captured by a closure are not
-  tracked by either analyzer, even when they are never modified indirectly.
+  tracked by any analyzer, even when they are never modified indirectly.
 - `nilptr` does not report nil interfaces, nil function calls, nil map writes or
   channel operations; those require separate rules.
 - `divzero` ignores floating-point and complex division because it does not
   panic.
+- `bounds` checks an explicit slice high bound against the length only for
+  arrays and strings. For slices, bounds above the length but within the
+  capacity are legal and are not reported.
 - Sheriff reasons only about what its analyzers implement. Dynamic values,
   reflection, `unsafe` and long cross-package flows may remain beyond its
   reach.
