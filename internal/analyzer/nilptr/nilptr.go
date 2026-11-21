@@ -9,6 +9,7 @@ package nilptr
 
 import (
 	"go/ast"
+	"go/constant"
 	"go/token"
 	"go/types"
 
@@ -44,30 +45,21 @@ type analyzer struct {
 	reported map[token.Pos]bool
 	depth    int
 
-	// Return-value summaries for same-package functions. summaries caches the
-	// nilness of a function's single pointer result; computing guards against
-	// recursive summary computation.
-	summaries map[*types.Func]nilness
-	computing map[*types.Func]bool
-
-	// collect is non-nil while a function body is analyzed to compute its
-	// return summary; return statements append their result nilness to it.
-	collect    []nilness
-	collecting bool
-	// resultVar is the named single pointer result during summary computation,
+	// evaluating guards against recursive call-result evaluation. evalUnknown
+	// is set when a callee uses control flow the evaluator does not model.
+	evaluating  map[*types.Func]bool
+	evalUnknown bool
+	// resultVar is the named single pointer result while evaluating a call,
 	// used to evaluate a bare return.
 	resultVar *types.Var
-	// suppress disables diagnostics while computing summaries.
-	suppress bool
 }
 
 func run(pass *analysis.Pass) (any, error) {
 	a := &analyzer{
-		pass:      pass,
-		funcs:     make(map[*types.Func]*ast.FuncDecl),
-		reported:  make(map[token.Pos]bool),
-		summaries: make(map[*types.Func]nilness),
-		computing: make(map[*types.Func]bool),
+		pass:       pass,
+		funcs:      make(map[*types.Func]*ast.FuncDecl),
+		reported:   make(map[token.Pos]bool),
+		evaluating: make(map[*types.Func]bool),
 	}
 	for _, file := range pass.Files {
 		for _, decl := range file.Decls {
@@ -290,9 +282,6 @@ func (a *analyzer) analyzeStmt(stmt ast.Stmt, s state) state {
 	case *ast.ReturnStmt:
 		for _, result := range st.Results {
 			a.analyzeExpr(result, s)
-		}
-		if a.collecting {
-			a.collect = append(a.collect, a.returnNilness(st, s))
 		}
 	case *ast.IfStmt:
 		return a.analyzeIf(st, s)
@@ -752,7 +741,7 @@ func (a *analyzer) reportNilness(pos token.Pos, ptr ast.Expr, n nilness) {
 }
 
 func (a *analyzer) reportf(pos token.Pos, format string, args ...any) {
-	if a.suppress || a.reported[pos] {
+	if a.reported[pos] {
 		return
 	}
 	a.reported[pos] = true
@@ -784,9 +773,7 @@ func (a *analyzer) exprNilness(expr ast.Expr, s state) nilness {
 		if a.isNilConversion(e) {
 			return isNil
 		}
-		if fn := a.calleeFunc(e); fn != nil {
-			return a.summaryOf(fn)
-		}
+		return a.evalCall(e, evalEnv{nilness: s})
 	}
 	return unknown
 }
@@ -843,6 +830,14 @@ func isPointer(t types.Type) bool {
 	}
 	_, ok := t.Underlying().(*types.Pointer)
 	return ok
+}
+
+func isInteger(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	b, ok := t.Underlying().(*types.Basic)
+	return ok && b.Info()&types.IsInteger != 0
 }
 
 func isPointerToArray(t types.Type) bool {
@@ -1014,64 +1009,6 @@ func pointerResult(fn *types.Func) (*types.Var, bool) {
 	return v, true
 }
 
-// summaryOf returns the nilness of a function's single pointer result, computed
-// from its reachable return statements. Results are cached. Diagnostics are
-// suppressed and interprocedural argument seeding is disabled while a summary
-// is computed; recursive cycles yield unknown.
-func (a *analyzer) summaryOf(fn *types.Func) nilness {
-	if n, ok := a.summaries[fn]; ok {
-		return n
-	}
-	if a.computing[fn] {
-		return unknown
-	}
-	decl := a.funcs[fn]
-	resultVar, ok := pointerResult(fn)
-	if decl == nil || decl.Body == nil || !ok {
-		a.summaries[fn] = unknown
-		return unknown
-	}
-
-	prevSuppress := a.suppress
-	prevDepth := a.depth
-	prevCollect := a.collect
-	prevCollecting := a.collecting
-	prevResult := a.resultVar
-
-	a.computing[fn] = true
-	a.suppress = true
-	a.depth++
-	a.collect = nil
-	a.collecting = true
-	a.resultVar = resultVar
-
-	a.analyzeFuncSeed(decl.Type, decl.Body, nil)
-	returns := a.collect
-
-	a.collect = prevCollect
-	a.collecting = prevCollecting
-	a.resultVar = prevResult
-	a.depth = prevDepth
-	a.suppress = prevSuppress
-	delete(a.computing, fn)
-
-	n := joinNilness(returns)
-	a.summaries[fn] = n
-	return n
-}
-
-// returnNilness evaluates the nilness produced by a return statement for a
-// single pointer result. A bare return uses the named result's current value.
-func (a *analyzer) returnNilness(st *ast.ReturnStmt, s state) nilness {
-	if len(st.Results) == 1 {
-		return a.exprNilness(st.Results[0], s)
-	}
-	if len(st.Results) == 0 && a.resultVar != nil && a.resultVar.Name() != "" {
-		return s[a.resultVar]
-	}
-	return unknown
-}
-
 func unparen(expr ast.Expr) ast.Expr {
 	for {
 		p, ok := expr.(*ast.ParenExpr)
@@ -1080,4 +1017,444 @@ func unparen(expr ast.Expr) ast.Expr {
 		}
 		expr = p.X
 	}
+}
+
+// evalEnv is a lightweight environment for evaluating a call's result nilness
+// path-sensitively. It tracks pointer nilness and integer constants for the
+// function being evaluated. It is separate from the intraprocedural state so
+// that evaluation cannot disturb the main analysis.
+type evalEnv struct {
+	nilness map[*types.Var]nilness
+	ints    map[*types.Var]int64
+}
+
+func newEvalEnv() evalEnv {
+	return evalEnv{
+		nilness: make(map[*types.Var]nilness),
+		ints:    make(map[*types.Var]int64),
+	}
+}
+
+func (e evalEnv) clone() evalEnv {
+	out := newEvalEnv()
+	for v, n := range e.nilness {
+		out.nilness[v] = n
+	}
+	for v, n := range e.ints {
+		out.ints[v] = n
+	}
+	return out
+}
+
+// evalCall evaluates the nilness of a call's single pointer result for the
+// given caller environment, using the call's actual arguments. It is
+// context-sensitive: the same function called with different arguments can
+// produce different results, and branch conditions that are decidable from the
+// bound arguments are pruned. Recursive cycles yield unknown.
+func (a *analyzer) evalCall(call *ast.CallExpr, caller evalEnv) nilness {
+	fn := a.calleeFunc(call)
+	if fn == nil {
+		return unknown
+	}
+	resultVar, ok := pointerResult(fn)
+	if !ok {
+		return unknown
+	}
+	decl := a.funcs[fn]
+	if decl == nil || decl.Body == nil {
+		return unknown
+	}
+	if a.evaluating[fn] {
+		return unknown
+	}
+
+	env := a.seedEnv(fn, call, caller)
+	if resultVar.Name() != "" {
+		env.nilness[resultVar] = isNil
+	}
+
+	prevEscaped := a.escaped
+	prevResult := a.resultVar
+	prevUnknown := a.evalUnknown
+
+	a.evaluating[fn] = true
+	a.evalUnknown = false
+	a.escaped = a.findEscaped(decl.Body)
+	a.resultVar = resultVar
+
+	returns := a.evalBlock(decl.Body, &env)
+	decided := !a.evalUnknown
+
+	a.escaped = prevEscaped
+	a.resultVar = prevResult
+	a.evalUnknown = prevUnknown
+	delete(a.evaluating, fn)
+
+	if !decided {
+		return unknown
+	}
+	return joinNilness(returns)
+}
+
+// seedEnv binds the call's arguments to the callee's parameters.
+func (a *analyzer) seedEnv(fn *types.Func, call *ast.CallExpr, caller evalEnv) evalEnv {
+	env := newEvalEnv()
+	params := a.paramVars(fn)
+	for i, arg := range call.Args {
+		if i >= len(params) {
+			break
+		}
+		p := params[i]
+		if p == nil {
+			continue
+		}
+		if isPointer(p.Type()) {
+			if n := a.evalNil(arg, caller); n != unknown {
+				env.nilness[p] = n
+			}
+			continue
+		}
+		if isInteger(p.Type()) {
+			if v, ok := a.evalInt(arg, caller); ok {
+				env.ints[p] = v
+			}
+		}
+	}
+	return env
+}
+
+func (a *analyzer) evalBlock(block *ast.BlockStmt, env *evalEnv) []nilness {
+	var returns []nilness
+	a.evalBlockInto(block, env, &returns)
+	return returns
+}
+
+// evalBlockInto evaluates statements in order and reports whether the block
+// definitely ends the flow (so following statements are unreachable).
+func (a *analyzer) evalBlockInto(block *ast.BlockStmt, env *evalEnv, returns *[]nilness) bool {
+	for _, stmt := range block.List {
+		if a.evalStmt(stmt, env, returns) {
+			return true
+		}
+	}
+	return false
+}
+
+// evalStmt evaluates one statement and reports whether it definitely ends the
+// flow.
+func (a *analyzer) evalStmt(stmt ast.Stmt, env *evalEnv, returns *[]nilness) bool {
+	switch st := stmt.(type) {
+	case *ast.AssignStmt:
+		a.evalAssign(st, env)
+	case *ast.DeclStmt:
+		a.evalDecl(st, env)
+	case *ast.IncDecStmt:
+		if v := a.varOf(st.X); v != nil {
+			delete(env.ints, v)
+		}
+	case *ast.ExprStmt:
+		// The value is discarded; no effect on the environment.
+	case *ast.ReturnStmt:
+		*returns = append(*returns, a.evalReturn(st, env))
+		return true
+	case *ast.BranchStmt:
+		return true
+	case *ast.IfStmt:
+		return a.evalIf(st, env, returns)
+	case *ast.BlockStmt:
+		return a.evalBlockInto(st, env, returns)
+	case *ast.LabeledStmt:
+		return a.evalStmt(st.Stmt, env, returns)
+	default:
+		// Loops, switch, select and goto are not modeled. Give up on the call
+		// rather than guess.
+		a.evalUnknown = true
+	}
+	return false
+}
+
+func (a *analyzer) evalIf(st *ast.IfStmt, env *evalEnv, returns *[]nilness) bool {
+	if st.Init != nil {
+		a.evalStmt(st.Init, env, returns)
+	}
+	if v, known := a.evalCond(st.Cond, *env); known {
+		if v {
+			return a.evalBlockInto(st.Body, env, returns)
+		}
+		if st.Else != nil {
+			return a.evalStmt(st.Else, env, returns)
+		}
+		return false
+	}
+	thenEnv := env.clone()
+	elseEnv := env.clone()
+	thenTerm := a.evalBlockInto(st.Body, &thenEnv, returns)
+	elseTerm := false
+	if st.Else != nil {
+		elseTerm = a.evalStmt(st.Else, &elseEnv, returns)
+	}
+	*env = mergeEval(thenEnv, elseEnv)
+	return thenTerm && elseTerm
+}
+
+func (a *analyzer) evalAssign(st *ast.AssignStmt, env *evalEnv) {
+	if (st.Tok == token.DEFINE || st.Tok == token.ASSIGN) && len(st.Lhs) == len(st.Rhs) {
+		for i, lhs := range st.Lhs {
+			a.evalAssignTo(lhs, st.Rhs[i], env)
+		}
+		return
+	}
+	for _, lhs := range st.Lhs {
+		a.evalForget(lhs, env)
+	}
+}
+
+func (a *analyzer) evalAssignTo(lhs, rhs ast.Expr, env *evalEnv) {
+	v := a.varOf(lhs)
+	if v == nil || !a.track(v) {
+		return
+	}
+	if isPointer(v.Type()) {
+		if n := a.evalNil(rhs, *env); n != unknown {
+			env.nilness[v] = n
+		} else {
+			delete(env.nilness, v)
+		}
+	}
+	if isInteger(v.Type()) {
+		if x, ok := a.evalInt(rhs, *env); ok {
+			env.ints[v] = x
+		} else {
+			delete(env.ints, v)
+		}
+	}
+}
+
+func (a *analyzer) evalForget(lhs ast.Expr, env *evalEnv) {
+	if v := a.varOf(lhs); v != nil {
+		delete(env.nilness, v)
+		delete(env.ints, v)
+	}
+}
+
+func (a *analyzer) evalDecl(st *ast.DeclStmt, env *evalEnv) {
+	gen, ok := st.Decl.(*ast.GenDecl)
+	if !ok || gen.Tok != token.VAR {
+		return
+	}
+	for _, spec := range gen.Specs {
+		vs, ok := spec.(*ast.ValueSpec)
+		if !ok {
+			continue
+		}
+		if len(vs.Values) == 0 {
+			for _, name := range vs.Names {
+				v := a.varOf(name)
+				if v == nil || !a.track(v) {
+					continue
+				}
+				if isPointer(v.Type()) {
+					env.nilness[v] = isNil
+				}
+				if isInteger(v.Type()) {
+					env.ints[v] = 0
+				}
+			}
+			continue
+		}
+		if len(vs.Values) == len(vs.Names) {
+			for i, name := range vs.Names {
+				a.evalAssignTo(name, vs.Values[i], env)
+			}
+			continue
+		}
+		for _, name := range vs.Names {
+			a.evalForget(name, env)
+		}
+	}
+}
+
+func (a *analyzer) evalReturn(st *ast.ReturnStmt, env *evalEnv) nilness {
+	if len(st.Results) == 1 {
+		return a.evalNil(st.Results[0], *env)
+	}
+	if len(st.Results) == 0 && a.resultVar != nil && a.resultVar.Name() != "" {
+		if n, ok := env.nilness[a.resultVar]; ok {
+			return n
+		}
+	}
+	return unknown
+}
+
+func (a *analyzer) evalNil(expr ast.Expr, env evalEnv) nilness {
+	if expr == nil {
+		return unknown
+	}
+	if tv, ok := a.pass.TypesInfo.Types[expr]; ok && tv.IsNil() {
+		return isNil
+	}
+	switch e := expr.(type) {
+	case *ast.ParenExpr:
+		return a.evalNil(e.X, env)
+	case *ast.Ident:
+		if v := a.varOf(e); v != nil && a.track(v) {
+			if n, ok := env.nilness[v]; ok {
+				return n
+			}
+		}
+		return unknown
+	case *ast.UnaryExpr:
+		if e.Op == token.AND {
+			return nonNil
+		}
+	case *ast.CallExpr:
+		if a.isNew(e) {
+			return nonNil
+		}
+		if a.isNilConversion(e) {
+			return isNil
+		}
+		return a.evalCall(e, env)
+	}
+	return unknown
+}
+
+func (a *analyzer) evalInt(expr ast.Expr, env evalEnv) (int64, bool) {
+	if expr == nil {
+		return 0, false
+	}
+	if tv, ok := a.pass.TypesInfo.Types[expr]; ok && tv.Value != nil && tv.Value.Kind() == constant.Int {
+		return constant.Int64Val(tv.Value)
+	}
+	switch e := expr.(type) {
+	case *ast.ParenExpr:
+		return a.evalInt(e.X, env)
+	case *ast.Ident:
+		if v := a.varOf(e); v != nil && a.track(v) {
+			x, ok := env.ints[v]
+			return x, ok
+		}
+	case *ast.UnaryExpr:
+		if e.Op == token.ADD || e.Op == token.SUB {
+			x, ok := a.evalInt(e.X, env)
+			if !ok {
+				return 0, false
+			}
+			if e.Op == token.SUB {
+				return -x, true
+			}
+			return x, true
+		}
+	case *ast.BinaryExpr:
+		x, xok := a.evalInt(e.X, env)
+		y, yok := a.evalInt(e.Y, env)
+		if xok && yok {
+			switch e.Op {
+			case token.ADD:
+				return x + y, true
+			case token.SUB:
+				return x - y, true
+			case token.MUL:
+				return x * y, true
+			case token.QUO:
+				if y != 0 {
+					return x / y, true
+				}
+			case token.REM:
+				if y != 0 {
+					return x % y, true
+				}
+			case token.AND:
+				return x & y, true
+			case token.OR:
+				return x | y, true
+			case token.XOR:
+				return x ^ y, true
+			case token.SHL:
+				return x << uint64(y), true
+			case token.SHR:
+				return x >> uint64(y), true
+			}
+		}
+	}
+	return 0, false
+}
+
+func (a *analyzer) evalCond(expr ast.Expr, env evalEnv) (bool, bool) {
+	switch e := expr.(type) {
+	case *ast.ParenExpr:
+		return a.evalCond(e.X, env)
+	case *ast.UnaryExpr:
+		if e.Op == token.NOT {
+			if v, ok := a.evalCond(e.X, env); ok {
+				return !v, true
+			}
+		}
+	case *ast.BinaryExpr:
+		switch e.Op {
+		case token.LAND:
+			l, lok := a.evalCond(e.X, env)
+			if lok && !l {
+				return false, true
+			}
+			r, rok := a.evalCond(e.Y, env)
+			if rok && !r {
+				return false, true
+			}
+			if lok && rok {
+				return l && r, true
+			}
+		case token.LOR:
+			l, lok := a.evalCond(e.X, env)
+			if lok && l {
+				return true, true
+			}
+			r, rok := a.evalCond(e.Y, env)
+			if rok && r {
+				return true, true
+			}
+			if lok && rok {
+				return l || r, true
+			}
+		case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ:
+			x, xok := a.evalInt(e.X, env)
+			y, yok := a.evalInt(e.Y, env)
+			if xok && yok {
+				return compareInts(e.Op, x, y), true
+			}
+		}
+	}
+	return false, false
+}
+
+func compareInts(op token.Token, x, y int64) bool {
+	switch op {
+	case token.EQL:
+		return x == y
+	case token.NEQ:
+		return x != y
+	case token.LSS:
+		return x < y
+	case token.LEQ:
+		return x <= y
+	case token.GTR:
+		return x > y
+	case token.GEQ:
+		return x >= y
+	}
+	return false
+}
+
+func mergeEval(a, b evalEnv) evalEnv {
+	out := newEvalEnv()
+	for v, an := range a.nilness {
+		bn := b.nilness[v]
+		out.nilness[v] = join(an, bn)
+	}
+	for v, an := range a.ints {
+		if bn, ok := b.ints[v]; ok && bn == an {
+			out.ints[v] = an
+		}
+	}
+	return out
 }

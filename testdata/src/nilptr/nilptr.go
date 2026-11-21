@@ -431,3 +431,49 @@ func integrationMalformedJSON() {
 	cfg := prepareConfig(req)
 	startServer(cfg)
 }
+
+func readID() int { return 10 }
+
+func classify(id int) *T {
+	if id > 0 {
+		return &T{}
+	}
+	return nil
+}
+
+func callClassifyPositive() {
+	p := classify(10)
+	_ = p.Field
+}
+
+func callClassifyZero() {
+	p := classify(0)
+	_ = p.Field // want `nil pointer dereference: p is nil`
+}
+
+func callClassifyNegative() {
+	p := classify(-5)
+	_ = p.Field // want `nil pointer dereference: p is nil`
+}
+
+func callClassifyUnknown() {
+	p := classify(readID())
+	_ = p.Field // want `nil pointer dereference: p may be nil`
+}
+
+func classifyGE(id int) *T {
+	if id >= 1 {
+		return &T{}
+	}
+	return nil
+}
+
+func callClassifyGEOne() {
+	p := classifyGE(1)
+	_ = p.Field
+}
+
+func callClassifyGEZero() {
+	p := classifyGE(0)
+	_ = p.Field // want `nil pointer dereference: p is nil`
+}
