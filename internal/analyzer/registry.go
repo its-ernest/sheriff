@@ -8,6 +8,7 @@ package analyzer
 import (
 	"golang.org/x/tools/go/analysis"
 
+	"github.com/its-ernest/sheriff/internal/analyzer/divzero"
 	"github.com/its-ernest/sheriff/internal/analyzer/nilptr"
 )
 
@@ -18,4 +19,5 @@ func Analyzers() []*analysis.Analyzer {
 
 var analyzers = []*analysis.Analyzer{
 	nilptr.Analyzer,
+	divzero.Analyzer,
 }

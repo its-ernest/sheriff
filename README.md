@@ -5,10 +5,10 @@
 Sheriff identifies dangerous execution paths, verifies assumptions and catches
 potential failures before runtime.
 
-> **Status: early development.** The first analyzer, `nilptr`, reports
-> dereferences of pointers that are provably nil within the enclosing function.
-> Other analysis rules are not implemented yet. A clean exit does not mean a
-> program is safe.
+> **Status: early development.** Two analyzers are implemented: `nilptr`
+> reports dereferences of pointers that are provably nil, and `divzero` reports
+> integer division or modulo by a divisor that is provably zero. Other analysis
+> rules are not implemented yet. A clean exit does not mean a program is safe.
 
 ## The problem
 
@@ -76,15 +76,16 @@ sheriff check ./...
 official analysis driver takes over. Package patterns and analysis flags are
 owned by the driver, so flags such as `-flags` and `-V=full` behave as usual.
 
-**Current behavior:** the `nilptr` analyzer is registered. It reports
-dereferences of pointers that are provably nil within the enclosing function,
-for example:
+**Current behavior:** the `nilptr` and `divzero` analyzers are registered. They
+report dereferences of pointers that are provably nil and integer division or
+modulo by a divisor that is provably zero, for example:
 
 ```text
 main.go:7:6: nil pointer dereference: p is nil
+main.go:5:10: division by zero: d is zero
 ```
 
-The analyzer is conservative: when it cannot establish nilness, it stays
+The analyzers are conservative: when they cannot establish a value, they stay
 silent. Other panic categories and broader safety checks are not implemented
 yet.
 
@@ -105,6 +106,21 @@ closure are treated as unknown.
 
 A missing diagnostic means the analyzer could not prove a nil dereference, not
 that the code is safe.
+
+### `divzero`
+
+Reports integer division (`/`) or modulo (`%`) where the divisor is definitely
+zero on every path that reaches the operation. Floating-point and complex
+division are ignored because they do not panic.
+
+Like `nilptr`, the analysis is intraprocedural and flow-sensitive for
+declarations, assignments, zero comparisons, `if`/`else`, loops and `switch`
+cases. Constant expressions are evaluated through `go/types`. Variables whose
+address is taken or that are captured by a closure are treated as unknown.
+
+The analyzer does not track package-level variables, values reached through
+pointers, function results, type parameters or interprocedural flow. A missing
+diagnostic means it could not prove a zero divisor, not that the code is safe.
 
 ## Architecture
 
@@ -133,13 +149,15 @@ The repository is intentionally small:
 sheriff/
 ├── cmd/sheriff/              executable entry point
 ├── internal/analyzer/        analyzer registration and coordination
+│   ├── divzero/              division/modulo by zero analyzer
 │   └── nilptr/               nil pointer dereference analyzer
 ├── internal/reporting/       reserved for future diagnostic presentation
+├── testdata/src/divzero/     analyzer fixtures
 ├── testdata/src/nilptr/      analyzer fixtures
 ├── README.md
 ├── CONTRIBUTING.md
 ├── LICENSE
-├── instruction.md
+├── i.md
 ├── .gitignore
 ├── go.mod
 └── Makefile
@@ -160,13 +178,12 @@ can be revisited.
 
 ## Planned analysis directions
 
-These are directions, not current capabilities. `nilptr` is implemented;
-the remaining items are not. Panic-inducing paths are the first focus; the
-project is not limited to panics.
+These are directions, not current capabilities. `nilptr` and `divzero` are
+implemented; the remaining items are not. Panic-inducing paths are the first
+focus; the project is not limited to panics.
 
 - Slice and array bounds.
 - Unsafe type assertions.
-- Division by zero.
 - Invalid channel operations.
 - Explicit panic detection.
 - Assumption and invariant verification.
@@ -176,14 +193,18 @@ project is not limited to panics.
 
 ## Known limitations
 
-- Only the `nilptr` analyzer is implemented.
-- `nilptr` is intraprocedural and conservative. It does not track pointer
-  values across function calls, interface values, maps, channels, function
-  values or goroutines.
+- The `nilptr` and `divzero` analyzers are implemented.
+- Both analyzers are intraprocedural and conservative. `nilptr` does not track
+  pointer values across function calls, interface values, maps, channels,
+  function values or goroutines. `divzero` does not track package-level
+  variables, values reached through pointers, function results or type
+  parameters.
 - Variables whose address is taken or that are captured by a closure are not
-  tracked, even when they are never modified indirectly.
+  tracked by either analyzer, even when they are never modified indirectly.
 - `nilptr` does not report nil interfaces, nil function calls, nil map writes or
   channel operations; those require separate rules.
+- `divzero` ignores floating-point and complex division because it does not
+  panic.
 - Sheriff reasons only about what its analyzers implement. Dynamic values,
   reflection, `unsafe` and long cross-package flows may remain beyond its
   reach.

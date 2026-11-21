@@ -75,7 +75,7 @@ Do not suppress warnings or ignore errors to obtain a green build.
 
 ## Adding an analyzer
 
-The `nilptr` analyzer is the first implementation and a reference for package
+The `nilptr` and `divzero` analyzers are reference implementations for package
 layout, registration and tests. Panic-inducing paths are the first focus, but
 the project is not limited to panic detection.
 
