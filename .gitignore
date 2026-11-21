@@ -1,0 +1,16 @@
+# Build output
+/bin/
+/sheriff
+
+# Test and coverage artifacts
+*.test
+*.out
+coverage.html
+
+# Editor and operating-system files
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+i.md
