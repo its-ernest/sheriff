@@ -36,7 +36,31 @@ const (
 	maybeNil
 )
 
-type state map[*types.Var]nilness
+// state is the intraprocedural analysis state: the nilness of pointer
+// variables and the constant integer values of integer variables. The integer
+// constants let the analyzer evaluate call arguments and branch conditions.
+type state struct {
+	nilness map[*types.Var]nilness
+	ints    map[*types.Var]int64
+}
+
+func newState() state {
+	return state{
+		nilness: make(map[*types.Var]nilness),
+		ints:    make(map[*types.Var]int64),
+	}
+}
+
+func forget(s state, v *types.Var) {
+	delete(s.nilness, v)
+	delete(s.ints, v)
+}
+
+func forgetAll(s state, vars map[*types.Var]struct{}) {
+	for v := range vars {
+		forget(s, v)
+	}
+}
 
 type analyzer struct {
 	pass     *analysis.Pass
@@ -89,7 +113,7 @@ func run(pass *analysis.Pass) (any, error) {
 }
 
 func (a *analyzer) analyzeFunc(ft *ast.FuncType, body *ast.BlockStmt) {
-	a.analyzeFuncSeed(ft, body, nil)
+	a.analyzeFuncSeed(ft, body, state{})
 }
 
 // analyzeFuncSeed analyzes a function body with an optional seed state. The
@@ -98,10 +122,7 @@ func (a *analyzer) analyzeFunc(ft *ast.FuncType, body *ast.BlockStmt) {
 func (a *analyzer) analyzeFuncSeed(ft *ast.FuncType, body *ast.BlockStmt, seed state) {
 	prevEscaped := a.escaped
 	a.escaped = a.findEscaped(body)
-	s := make(state, len(seed))
-	for v, n := range seed {
-		s[v] = n
-	}
+	s := clone(seed)
 	a.initResults(ft, s)
 	a.analyzeBlock(body, s)
 	a.escaped = prevEscaped
@@ -128,22 +149,31 @@ func (a *analyzer) propagateCall(call *ast.CallExpr, s state) {
 	if len(params) == 0 {
 		return
 	}
-	seed := make(state)
+	seed := newState()
 	seeded := false
 	for i, arg := range call.Args {
 		if i >= len(params) {
 			break
 		}
 		p := params[i]
-		if p == nil || !isPointer(p.Type()) {
+		if p == nil {
 			continue
 		}
-		n := a.exprNilness(arg, s)
-		if n == unknown {
+		if isPointer(p.Type()) {
+			n := a.exprNilness(arg, s)
+			if n == unknown {
+				continue
+			}
+			seed.nilness[p] = n
+			seeded = true
 			continue
 		}
-		seed[p] = n
-		seeded = true
+		if isInteger(p.Type()) {
+			if x, ok := a.exprInt(arg, s); ok {
+				seed.ints[p] = x
+				seeded = true
+			}
+		}
 	}
 	if !seeded {
 		return
@@ -235,8 +265,15 @@ func (a *analyzer) initResults(ft *ast.FuncType, s state) {
 	}
 	for _, field := range ft.Results.List {
 		for _, name := range field.Names {
-			if v := a.varOf(name); v != nil && a.track(v) && isPointer(v.Type()) {
-				s[v] = isNil
+			v := a.varOf(name)
+			if v == nil || !a.track(v) {
+				continue
+			}
+			if isPointer(v.Type()) {
+				s.nilness[v] = isNil
+			}
+			if isInteger(v.Type()) {
+				s.ints[v] = 0
 			}
 		}
 	}
@@ -306,6 +343,9 @@ func (a *analyzer) analyzeStmt(stmt ast.Stmt, s state) state {
 		a.analyzeExpr(st.Value, s)
 	case *ast.IncDecStmt:
 		a.analyzeExpr(st.X, s)
+		if v := a.varOf(st.X); v != nil && a.track(v) {
+			forget(s, v)
+		}
 	case *ast.LabeledStmt:
 		return a.analyzeStmt(st.Stmt, s)
 	}
@@ -357,11 +397,7 @@ func (a *analyzer) analyzeFor(st *ast.ForStmt, s state) state {
 			assigned[v] = struct{}{}
 		}
 	}
-	for v := range assigned {
-		if _, ok := s[v]; ok {
-			s[v] = unknown
-		}
-	}
+	forgetAll(s, assigned)
 	return s
 }
 
@@ -373,10 +409,10 @@ func (a *analyzer) analyzeRange(st *ast.RangeStmt, s state) state {
 
 	bodyState := clone(s)
 	if v := a.varOf(st.Key); v != nil && a.track(v) {
-		bodyState[v] = unknown
+		forget(bodyState, v)
 	}
 	if v := a.varOf(st.Value); v != nil && a.track(v) {
-		bodyState[v] = unknown
+		forget(bodyState, v)
 	}
 	a.analyzeBlock(st.Body, bodyState)
 
@@ -387,11 +423,7 @@ func (a *analyzer) analyzeRange(st *ast.RangeStmt, s state) state {
 	if v := a.varOf(st.Value); v != nil {
 		assigned[v] = struct{}{}
 	}
-	for v := range assigned {
-		if _, ok := s[v]; ok {
-			s[v] = unknown
-		}
-	}
+	forgetAll(s, assigned)
 	return s
 }
 
@@ -415,8 +447,10 @@ func (a *analyzer) analyzeSwitch(st *ast.SwitchStmt, s state) state {
 	}
 
 	var out state
+	set := false
 	if !hasDefault {
 		out = clone(s)
+		set = true
 	}
 	for _, clause := range st.Body.List {
 		cc, ok := clause.(*ast.CaseClause)
@@ -439,13 +473,14 @@ func (a *analyzer) analyzeSwitch(st *ast.SwitchStmt, s state) state {
 			}
 		}
 		res := a.analyzeStmtList(cc.Body, cs)
-		if out == nil {
+		if !set {
 			out = res
+			set = true
 		} else {
 			out = merge(out, res)
 		}
 	}
-	if out == nil {
+	if !set {
 		out = clone(s)
 	}
 	return out
@@ -459,7 +494,7 @@ func (a *analyzer) refineDefault(st *ast.SwitchStmt, s state) (state, bool) {
 		return s, true
 	}
 	tag := a.varOf(st.Tag)
-	if tag == nil || !a.track(tag) || !isPointer(tag.Type()) || s[tag] != isNil {
+	if tag == nil || !a.track(tag) || !isPointer(tag.Type()) || s.nilness[tag] != isNil {
 		return s, true
 	}
 	for _, clause := range st.Body.List {
@@ -491,7 +526,7 @@ func (a *analyzer) refineCase(st *ast.SwitchStmt, cc *ast.CaseClause, s state) b
 		return true
 	}
 
-	tagState := s[tag]
+	tagState := s.nilness[tag]
 	caseState := a.caseNilness(cc, s)
 	// Only a definite mismatch proves the case unreachable. A maybeNil tag may
 	// still match a nil or non-nil case.
@@ -501,7 +536,7 @@ func (a *analyzer) refineCase(st *ast.SwitchStmt, cc *ast.CaseClause, s state) b
 	// If the tag is nil and the case may or may not match nil, do not claim
 	// the tag is definitely nil inside the body.
 	if tagState == isNil && caseState == unknown {
-		s[tag] = unknown
+		s.nilness[tag] = unknown
 	}
 	return true
 }
@@ -566,23 +601,37 @@ func (a *analyzer) analyzeAssign(st *ast.AssignStmt, s state) state {
 		a.analyzeExpr(rhs, s)
 	}
 
-	if len(st.Lhs) == len(st.Rhs) {
-		values := make([]nilness, len(st.Rhs))
+	if (st.Tok == token.DEFINE || st.Tok == token.ASSIGN) && len(st.Lhs) == len(st.Rhs) {
+		values := make([]value, len(st.Rhs))
 		for i, rhs := range st.Rhs {
-			values[i] = a.exprNilness(rhs, s)
+			values[i] = a.eval(rhs, s)
 		}
 		for i, lhs := range st.Lhs {
-			a.assign(lhs, values[i], s)
+			a.assign(lhs, values[i].nilness, values[i].intVal, values[i].hasInt, s)
 		}
 		return s
 	}
 
-	// One right-hand side feeding several variables (a call, map lookup, type
-	// assertion, and so on) provides no definite nilness information.
+	// Compound assignments and one right-hand side feeding several variables
+	// (a call, map lookup, type assertion, and so on) provide no definite
+	// value information.
 	for _, lhs := range st.Lhs {
-		a.assign(lhs, unknown, s)
+		a.assign(lhs, unknown, 0, false, s)
 	}
 	return s
+}
+
+// value is the nilness and integer constant of an expression.
+type value struct {
+	nilness nilness
+	intVal  int64
+	hasInt  bool
+}
+
+func (a *analyzer) eval(expr ast.Expr, s state) value {
+	v := value{nilness: a.exprNilness(expr, s)}
+	v.intVal, v.hasInt = a.exprInt(expr, s)
+	return v
 }
 
 func (a *analyzer) analyzeLHS(expr ast.Expr, s state) {
@@ -614,8 +663,15 @@ func (a *analyzer) analyzeDecl(st *ast.DeclStmt, s state) state {
 		}
 		if len(vs.Values) == 0 {
 			for _, name := range vs.Names {
-				if v := a.varOf(name); v != nil && a.track(v) && isPointer(v.Type()) {
-					s[v] = isNil
+				v := a.varOf(name)
+				if v == nil || !a.track(v) {
+					continue
+				}
+				if isPointer(v.Type()) {
+					s.nilness[v] = isNil
+				}
+				if isInteger(v.Type()) {
+					s.ints[v] = 0
 				}
 			}
 			continue
@@ -624,20 +680,35 @@ func (a *analyzer) analyzeDecl(st *ast.DeclStmt, s state) state {
 			a.analyzeExpr(val, s)
 		}
 		if len(vs.Values) == len(vs.Names) {
-			values := make([]nilness, len(vs.Values))
+			values := make([]value, len(vs.Values))
 			for i, val := range vs.Values {
-				values[i] = a.exprNilness(val, s)
+				values[i] = a.eval(val, s)
 			}
 			for i, name := range vs.Names {
-				if v := a.varOf(name); v != nil && a.track(v) && isPointer(v.Type()) {
-					s[v] = values[i]
+				v := a.varOf(name)
+				if v == nil || !a.track(v) {
+					continue
+				}
+				if isPointer(v.Type()) {
+					if values[i].nilness == unknown {
+						delete(s.nilness, v)
+					} else {
+						s.nilness[v] = values[i].nilness
+					}
+				}
+				if isInteger(v.Type()) {
+					if values[i].hasInt {
+						s.ints[v] = values[i].intVal
+					} else {
+						delete(s.ints, v)
+					}
 				}
 			}
 			continue
 		}
 		for _, name := range vs.Names {
-			if v := a.varOf(name); v != nil && a.track(v) && isPointer(v.Type()) {
-				s[v] = unknown
+			if v := a.varOf(name); v != nil && a.track(v) {
+				forget(s, v)
 			}
 		}
 	}
@@ -760,7 +831,7 @@ func (a *analyzer) exprNilness(expr ast.Expr, s state) nilness {
 		return a.exprNilness(e.X, s)
 	case *ast.Ident:
 		if v := a.varOf(e); v != nil && a.track(v) {
-			return s[v]
+			return s.nilness[v]
 		}
 	case *ast.UnaryExpr:
 		if e.Op == token.AND {
@@ -773,7 +844,7 @@ func (a *analyzer) exprNilness(expr ast.Expr, s state) nilness {
 		if a.isNilConversion(e) {
 			return isNil
 		}
-		return a.evalCall(e, evalEnv{nilness: s})
+		return a.evalCall(e, evalEnv{nilness: s.nilness, ints: s.ints})
 	}
 	return unknown
 }
@@ -852,12 +923,88 @@ func isPointerToArray(t types.Type) bool {
 	return ok
 }
 
-func (a *analyzer) assign(lhs ast.Expr, n nilness, s state) {
+func (a *analyzer) assign(lhs ast.Expr, n nilness, intVal int64, hasInt bool, s state) {
 	v := a.varOf(lhs)
-	if v == nil || !a.track(v) || !isPointer(v.Type()) {
+	if v == nil || !a.track(v) {
 		return
 	}
-	s[v] = n
+	if isPointer(v.Type()) {
+		if n == unknown {
+			delete(s.nilness, v)
+		} else {
+			s.nilness[v] = n
+		}
+	}
+	if isInteger(v.Type()) {
+		if hasInt {
+			s.ints[v] = intVal
+		} else {
+			delete(s.ints, v)
+		}
+	}
+}
+
+// exprInt returns the constant integer value of an expression when it can be
+// established from a constant expression or a tracked local variable.
+func (a *analyzer) exprInt(expr ast.Expr, s state) (int64, bool) {
+	if expr == nil {
+		return 0, false
+	}
+	if tv, ok := a.pass.TypesInfo.Types[expr]; ok && tv.Value != nil && tv.Value.Kind() == constant.Int {
+		return constant.Int64Val(tv.Value)
+	}
+	switch e := expr.(type) {
+	case *ast.ParenExpr:
+		return a.exprInt(e.X, s)
+	case *ast.Ident:
+		if v := a.varOf(e); v != nil && a.track(v) {
+			x, ok := s.ints[v]
+			return x, ok
+		}
+	case *ast.UnaryExpr:
+		if e.Op == token.ADD || e.Op == token.SUB {
+			x, ok := a.exprInt(e.X, s)
+			if !ok {
+				return 0, false
+			}
+			if e.Op == token.SUB {
+				return -x, true
+			}
+			return x, true
+		}
+	case *ast.BinaryExpr:
+		x, xok := a.exprInt(e.X, s)
+		y, yok := a.exprInt(e.Y, s)
+		if xok && yok {
+			switch e.Op {
+			case token.ADD:
+				return x + y, true
+			case token.SUB:
+				return x - y, true
+			case token.MUL:
+				return x * y, true
+			case token.QUO:
+				if y != 0 {
+					return x / y, true
+				}
+			case token.REM:
+				if y != 0 {
+					return x % y, true
+				}
+			case token.AND:
+				return x & y, true
+			case token.OR:
+				return x | y, true
+			case token.XOR:
+				return x ^ y, true
+			case token.SHL:
+				return x << uint64(y), true
+			case token.SHR:
+				return x >> uint64(y), true
+			}
+		}
+	}
+	return 0, false
 }
 
 func (a *analyzer) refine(cond ast.Expr, truth bool, s state) {
@@ -903,9 +1050,9 @@ func (a *analyzer) refineNilComparison(e *ast.BinaryExpr, truth bool, s state) {
 	// p == nil is true exactly when p is nil; p != nil is the inverse.
 	equal := e.Op == token.EQL
 	if truth == equal {
-		s[v] = isNil
+		s.nilness[v] = isNil
 	} else {
-		s[v] = nonNil
+		s.nilness[v] = nonNil
 	}
 }
 
@@ -940,9 +1087,12 @@ func (a *analyzer) assignedVars(node ast.Node) map[*types.Var]struct{} {
 }
 
 func clone(s state) state {
-	out := make(state, len(s))
-	for v, n := range s {
-		out[v] = n
+	out := newState()
+	for v, n := range s.nilness {
+		out.nilness[v] = n
+	}
+	for v, n := range s.ints {
+		out.ints[v] = n
 	}
 	return out
 }
@@ -965,16 +1115,21 @@ func join(x, y nilness) nilness {
 
 func merge(a, b state) state {
 	out := clone(a)
-	for v, bn := range b {
-		an, ok := out[v]
+	for v, bn := range b.nilness {
+		an, ok := out.nilness[v]
 		if !ok {
 			an = unknown
 		}
-		out[v] = join(an, bn)
+		out.nilness[v] = join(an, bn)
 	}
-	for v, an := range a {
-		if _, ok := b[v]; !ok {
-			out[v] = join(an, unknown)
+	for v, an := range out.nilness {
+		if _, ok := b.nilness[v]; !ok {
+			out.nilness[v] = join(an, unknown)
+		}
+	}
+	for v, an := range out.ints {
+		if bv, ok := b.ints[v]; !ok || bv != an {
+			delete(out.ints, v)
 		}
 	}
 	return out

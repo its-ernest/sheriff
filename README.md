@@ -106,13 +106,15 @@ selection through a nil pointer (`p.Field`), indexing or slicing a nil pointer
 to an array, and ranging over a nil pointer to an array.
 
 The analysis is flow-sensitive for declarations, assignments, `if`/`else`, loop
-conditions and `switch` cases. It follows values across same-package function
-boundaries: tracked arguments are seeded into a callee's parameters, and a
-call's result is evaluated per call site by analyzing the callee with those
-argument values bound. Evaluation is argument-sensitive, so decidable branch
-conditions are pruned: a callee that returns nil only for non-positive IDs is
-known to return non-nil when called with a positive constant, and the nil path
-is not reported. Nilness propagates transitively through chains of calls.
+conditions and `switch` cases. It tracks integer constants for local variables,
+so it can evaluate call arguments and branch conditions. It follows values
+across same-package function boundaries: tracked arguments are seeded into a
+callee's parameters, and a call's result is evaluated per call site by analyzing
+the callee with those argument values bound. Evaluation is argument-sensitive,
+so decidable branch conditions are pruned: a callee that returns nil only for
+non-positive IDs is known to return non-nil when called with a positive constant
+(for example `id := 10; lookup(id)`), and the nil path is not reported. Nilness
+propagates transitively through chains of calls.
 
 Nilness is one of four states: nil, non-nil, **maybe nil** (a known possibility,
 for example a function with mixed return paths), or unknown (nilness could not be
@@ -273,19 +275,16 @@ are the first focus; the project is not limited to panics.
   arguments into same-package functions, seeding the callee's parameter and
   analyzing its body. `nilptr` also evaluates each call's single pointer result
   per call site, binding the actual argument values and pruning decidable
-  branches, so nilness propagates transitively through same-package call chains
-  and a provably non-nil result stays silent. `nilptr` argument evaluation reads
-  constants from the call-site expression (literals and constant expressions);
-  integer constants held in the caller's local variables are not propagated into
-  the evaluation, so `id := 10; f(id)` is treated like an unknown argument. A
-  callee that uses loops, `switch`, `select` or `goto` makes the result unknown
-  rather than guessed, and recursive cycles yield unknown. None of the analyzers
-  resolve function values, methods or imported functions. `nilptr` does not track
-  pointer values through interface values, maps, channels, function values or
-  goroutines. `divzero` does not track package-level variables, values reached
-  through pointers, function results or type parameters. `bounds` does not track
-  capacities, loop induction values or interprocedural lengths. `assert` does not
-  track dynamic types through fields, maps, channels or type parameters.
+  branches; it tracks integer constants for local variables so that
+  `id := 10; f(id)` is reasoned about precisely. A callee that uses loops,
+  `switch`, `select` or `goto` makes the result unknown rather than guessed, and
+  recursive cycles yield unknown. None of the analyzers resolve function values,
+  methods or imported functions. `nilptr` does not track pointer values through
+  interface values, maps, channels, function values or goroutines. `divzero`
+  does not track package-level variables, values reached through pointers,
+  function results or type parameters. `bounds` does not track capacities, loop
+  induction values or interprocedural lengths. `assert` does not track dynamic
+  types through fields, maps, channels or type parameters.
 - Variables whose address is taken or that are captured by a closure are not
   tracked by any analyzer, even when they are never modified indirectly.
 - `nilptr` does not report nil interfaces, nil function calls, nil map writes or

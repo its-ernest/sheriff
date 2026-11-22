@@ -477,3 +477,21 @@ func callClassifyGEZero() {
 	p := classifyGE(0)
 	_ = p.Field // want `nil pointer dereference: p is nil`
 }
+
+func callClassifyLocalConst() {
+	id := 10
+	p := classify(id)
+	_ = p.Field
+}
+
+func callClassifyLocalZero() {
+	id := 0
+	p := classify(id)
+	_ = p.Field // want `nil pointer dereference: p is nil`
+}
+
+func callClassifyMultiAssignConst() {
+	id, _ := 1, 1
+	p := classify(id)
+	_ = p.Field
+}
