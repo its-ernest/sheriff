@@ -17,6 +17,7 @@ func lookup(id int) *User {
 }
 
 func main() {
-	user := lookup(10)
+	id := 10
+	user := lookup(id)
 	fmt.Println(user.Name)
 }
