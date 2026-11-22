@@ -244,12 +244,14 @@ registry.
 
 ### CLI design
 
-The intended interface is `sheriff check <packages>`. The official
-`multichecker` driver expects package patterns directly, so the command strips
-a leading `check` argument before delegating. This keeps flag parsing, package
-loading, type checking and diagnostics in the driver, and avoids a CLI
-framework for a single subcommand. If the command surface grows, that decision
-can be revisited.
+The interface is `sheriff check <packages>`. The official `multichecker` driver
+expects package patterns directly, so the command requires and strips a leading
+`check` subcommand before delegating; driver flags may appear before it. Any
+other first positional argument is rejected with an explicit error and usage
+rather than being passed to the driver as a package pattern, where it would fail
+later with a confusing message. This keeps flag parsing, package loading, type
+checking and diagnostics in the driver, and avoids a CLI framework for a single
+subcommand. If the command surface grows, that decision can be revisited.
 
 ## Planned analysis directions
 
