@@ -52,8 +52,7 @@ Do not suppress warnings or ignore errors to obtain a green build.
 - `cmd/sheriff` — executable entry point. Keep it thin.
 - `internal/analyzer` — analyzer registration and coordination. Analysis
   implementations do not belong in this package.
-- `internal/reporting` — reserved for future diagnostic presentation. Do not
-  build a reporting framework before there is a concrete need.
+- `internal/reporting` — structured report formatting (text and JSON).
 - `testdata` — fixtures for analyzer tests.
 
 ## Coding conventions

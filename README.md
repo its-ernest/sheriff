@@ -71,26 +71,35 @@ The binary is written to `bin/sheriff`.
 ```sh
 sheriff check ./...
 sheriff check ./internal/...
-sheriff check ./...
+sheriff check -json ./...
 ```
 
-`check` is accepted by a small adapter in `cmd/sheriff` and removed before the
-official analysis driver takes over. Package patterns and analysis flags are
-owned by the driver, so flags such as `-flags` and `-V=full` behave as usual.
+`check` is required; it is stripped by a small adapter in `cmd/sheriff` before
+package loading. `-json` selects JSON output instead of the default text report;
+`-flags` and `-V=full` behave as usual.
 
 **Current behavior:** the `nilptr`, `divzero`, `bounds` and `assert` analyzers
 are registered. They report dereferences of pointers that are provably nil,
 integer division or modulo by a divisor that is provably zero, indexing or
 slicing that is provably out of range, and type assertions that provably cannot
-succeed, for example:
+succeed. Results are printed as a structured report, for example:
 
 ```text
-main.go:7:6: nil pointer dereference: p is nil
-main.go:5:10: division by zero: d is zero
-main.go:6:10: index out of range: index 3 for length 3
-main.go:9:10: impossible type assertion: r is *strings.Reader, not *bytes.Buffer
-main.go:12:5: nil pointer dereference: cfg may be nil
+SHERIFF REPORT
+
+Packages analyzed:  1
+Findings detected:  2
+
+Findings:
+  [nilptr] main.go:7:6: nil pointer dereference: p is nil
+  [divzero] main.go:5:10: division by zero: d is zero
+
+By analyzer:
+  divzero  1
+  nilptr   1
 ```
+
+The same data is available as JSON with `-json`, for use by other tools.
 
 The analyzers are conservative: when they cannot establish a value, they stay
 silent. Other panic categories and broader safety checks are not implemented
@@ -228,7 +237,7 @@ sheriff/
 │   ├── bounds/               index and slice bounds analyzer
 │   ├── divzero/              division/modulo by zero analyzer
 │   └── nilptr/               nil pointer dereference analyzer
-├── internal/reporting/       reserved for future diagnostic presentation
+├── internal/reporting/       structured report formatting
 ├── testdata/src/assert/      analyzer fixtures
 ├── testdata/src/bounds/      analyzer fixtures
 ├── testdata/src/divzero/     analyzer fixtures
@@ -248,14 +257,15 @@ registry.
 
 ### CLI design
 
-The interface is `sheriff check <packages>`. The official `multichecker` driver
-expects package patterns directly, so the command requires and strips a leading
-`check` subcommand before delegating; driver flags may appear before it. Any
-other first positional argument is rejected with an explicit error and usage
-rather than being passed to the driver as a package pattern, where it would fail
-later with a confusing message. This keeps flag parsing, package loading, type
-checking and diagnostics in the driver, and avoids a CLI framework for a single
-subcommand. If the command surface grows, that decision can be revisited.
+The interface is `sheriff check [flags] <packages>`. The command requires and
+strips a leading `check` subcommand; any other first positional argument is
+rejected with an explicit error and usage. Packages are loaded with
+`go/packages` and the analyzers are run with `go/analysis`'s checker. Sheriff
+formats the findings itself into a structured report (text, or JSON with
+`-json`) instead of delegating to the stock `multichecker` text output. This
+keeps the report structured and JSON-serialisable while still using the official
+loading and analysis infrastructure. Flags are limited to `-json` and `-flags`;
+if the command surface grows, that decision can be revisited.
 
 ## Planned analysis directions
 
