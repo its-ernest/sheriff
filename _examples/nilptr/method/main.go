@@ -1,10 +1,8 @@
-//go:build ignore
-
-// This variant shows Sheriff resolving a method call. The method returns nil,
+// Command method shows Sheriff resolving a method call. The method returns nil,
 // and the caller dereferences the result.
 //
-//	go run _examples/nilptr/method.go
-//	sheriff check _examples/nilptr/method.go
+//	go run ./_examples/nilptr/method
+//	sheriff check ./_examples/nilptr/method
 package main
 
 import "fmt"

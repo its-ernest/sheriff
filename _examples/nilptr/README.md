@@ -1,35 +1,39 @@
 # nilptr examples
 
-Small programs that trigger a nil pointer dereference Sheriff reports. Each file
-is a variant; `main.go` is the basic case, and the others exercise specific
-resolution paths. Files with a `//go:build ignore` tag are standalone: run them
-by naming the file.
+Small programs that trigger a nil pointer dereference Sheriff reports. Each
+variant is its own `package main` in a subdirectory, so a single project-wide
+run checks them all.
 
-## Run a program
+## Run the whole project
 
 ```sh
-go run _examples/nilptr/main.go
-go run _examples/nilptr/function_value.go
-go run _examples/nilptr/method.go
+sheriff check ./_examples/nilptr/...
+```
+
+Or from inside the directory:
+
+```sh
+cd _examples/nilptr
+sheriff check ./...
+```
+
+## Run a single program
+
+```sh
+go run ./_examples/nilptr
+go run ./_examples/nilptr/function-value
+go run ./_examples/nilptr/method
 ```
 
 Each panics at runtime.
 
-## Analyze one
-
-```sh
-sheriff check _examples/nilptr/main.go
-sheriff check _examples/nilptr/function_value.go
-sheriff check _examples/nilptr/method.go
-```
-
 ## Variants
 
-| File | What it shows |
+| Directory | What it shows |
 | --- | --- |
-| `main.go` | a nil pointer is declared and dereferenced |
-| `function_value.go` | a call through a function value (`factory := nilFactory`) |
-| `method.go` | a method call returning nil (`provider.GetConfig()`) |
+| `.` | a nil pointer is declared and dereferenced |
+| `function-value/` | a call through a function value (`factory := nilFactory`) |
+| `method/` | a method call returning nil (`provider.GetConfig()`) |
 
 These correspond to limitations that have been fixed and removed from
 `testdata/limitations`; they stay here as regression examples.
