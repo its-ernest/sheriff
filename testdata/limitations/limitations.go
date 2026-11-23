@@ -1,3 +1,7 @@
+// Package limitations collects programs that Sheriff does not currently
+// analyse. Each function is valid Go that contains a real hazard the analyzer
+// cannot prove, so running Sheriff over this package should report none of them.
+// When a limitation is fixed, its function is removed from this file.
 package limitations
 
 // ============================================================
@@ -8,18 +12,7 @@ type Config struct {
 	Host string
 }
 
-// 1. Function values are not resolved.
-func nilFactory() *Config {
-	return nil
-}
-
-func functionValueNil() {
-	factory := nilFactory
-	cfg := factory()
-	_ = cfg.Host // Potential nil pointer dereference.
-}
-
-// 2. Methods are not resolved.
+// 1. Methods are not resolved.
 type Provider struct{}
 
 func (p *Provider) GetConfig() *Config {
@@ -29,6 +22,13 @@ func (p *Provider) GetConfig() *Config {
 func methodNil() {
 	var provider Provider
 	cfg := provider.GetConfig()
+	_ = cfg.Host // Potential nil pointer dereference.
+}
+
+// 2. Function values holding a function literal are not resolved.
+func functionLiteralNil() {
+	factory := func() *Config { return nil }
+	cfg := factory()
 	_ = cfg.Host // Potential nil pointer dereference.
 }
 
@@ -142,18 +142,6 @@ func loopBounds() int {
 	return 0
 }
 
-// 14. Interprocedural length tracking.
-func readIndex(values []int, index int) int {
-	return values[index]
-}
-
-func interproceduralBounds() int {
-	values := []int{10, 20, 30}
-	index := 5
-
-	return readIndex(values, index) // Out of bounds.
-}
-
 // ============================================================
 // ASSERT LIMITATIONS
 // ============================================================
@@ -162,14 +150,14 @@ type Envelope struct {
 	Value any
 }
 
-// 15. Dynamic types through struct fields.
+// 14. Dynamic types through struct fields.
 func assertionThroughField() string {
 	envelope := Envelope{Value: 123}
 
 	return envelope.Value.(string)
 }
 
-// 16. Dynamic types through maps.
+// 15. Dynamic types through maps.
 func assertionThroughMap() string {
 	values := map[string]any{
 		"name": 123,
@@ -178,7 +166,7 @@ func assertionThroughMap() string {
 	return values["name"].(string)
 }
 
-// 17. Dynamic types through channels.
+// 16. Dynamic types through channels.
 func assertionThroughChannel() string {
 	ch := make(chan any, 1)
 	ch <- 123
@@ -187,7 +175,7 @@ func assertionThroughChannel() string {
 	return value.(string)
 }
 
-// 18. Dynamic types through type parameters.
+// 17. Dynamic types through type parameters.
 func assertionThroughGeneric[T any](value T) string {
 	return any(value).(string)
 }
