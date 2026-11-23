@@ -57,3 +57,50 @@ func TestReportJSON(t *testing.T) {
 		t.Fatalf("unexpected report: %+v", got)
 	}
 }
+
+func TestReportHTML(t *testing.T) {
+	r := Report{
+		Packages: 1,
+		Findings: []Finding{{Analyzer: "nilptr", Position: "main.go:10:2", Message: "nil pointer dereference: p is nil"}},
+	}
+	var buf bytes.Buffer
+	if err := r.WriteHTML(&buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"<!DOCTYPE html>",
+		"Sheriff Report",
+		"Packages analyzed: 1",
+		"nilptr",
+		"main.go:10:2",
+		"nil pointer dereference: p is nil",
+		"data-search=",
+		"file://",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("html report missing %q", want)
+		}
+	}
+}
+
+func TestReportHTMLEscapesMessage(t *testing.T) {
+	r := Report{
+		Packages: 1,
+		Findings: []Finding{{Analyzer: "x", Position: "f.go:1:1", Message: "<script>alert(1)</script>"}},
+	}
+	var buf bytes.Buffer
+	if err := r.WriteHTML(&buf); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "<script>alert(1)</script>") {
+		t.Fatal("html report did not escape the message")
+	}
+}
+
+func TestSplitPos(t *testing.T) {
+	file, linecol := splitPos("a/b/main.go:12:3")
+	if file != "a/b/main.go" || linecol != "12:3" {
+		t.Fatalf("splitPos = %q, %q", file, linecol)
+	}
+}

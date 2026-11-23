@@ -32,7 +32,9 @@ Run Sheriff's safety analyzers over the named Go packages and print a
 structured report.
 
 Flags:
-  -json   emit the report as JSON
+  -json     emit the report as JSON
+  -html     write an interactive HTML report to a file
+  -o path   output file for -html (default "sheriff-report.html")
 `
 
 func main() {
@@ -66,6 +68,8 @@ func run(argv []string) int {
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 	jsonOut := fs.Bool("json", false, "emit the report as JSON")
+	htmlOut := fs.Bool("html", false, "write an HTML report to a file")
+	outPath := fs.String("o", "sheriff-report.html", "output file for -html")
 	printFlags := fs.Bool("flags", false, "print analyzer flags as JSON and exit")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -116,25 +120,48 @@ func run(argv []string) int {
 	})
 
 	report := reporting.Report{Packages: len(initial), Findings: findings}
-	if *jsonOut {
+	switch {
+	case *htmlOut:
+		if err := writeHTML(*outPath, report); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
+			return 1
+		}
+		abs, err := filepath.Abs(*outPath)
+		if err != nil {
+			abs = *outPath
+		}
+		fmt.Printf("%d finding(s) across %d package(s). Report: file://%s\n", len(findings), len(initial), abs)
+	case *jsonOut:
 		if err := report.WriteJSON(os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
 			return 1
 		}
-	} else {
+	default:
 		report.WriteText(os.Stdout)
 	}
 
 	if pkgErrors > 0 || analysisErrors > 0 {
 		return 1
 	}
-	if *jsonOut {
+	if *jsonOut || *htmlOut {
 		return 0
 	}
 	if len(findings) > 0 {
 		return 3
 	}
 	return 0
+}
+
+func writeHTML(path string, report reporting.Report) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	if err := report.WriteHTML(f); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // collectFindings gathers diagnostics from the root actions (one per analyzer
@@ -190,17 +217,21 @@ func printAnalyzerFlags(analyzers []*analysis.Analyzer) int {
 
 // stripCheck requires and removes the "check" subcommand so that only package
 // patterns (and flags) reach the driver. A repeated program name or a missing
-// subcommand is rejected with an explicit error.
+// subcommand is rejected with an explicit error. Flags that take a separate
+// value are skipped while scanning for the subcommand.
 func stripCheck(args []string) ([]string, error) {
-	for i, a := range args {
-		if strings.HasPrefix(a, "-") {
-			continue
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "-o":
+			i++ // the output path is a separate value
+		case strings.HasPrefix(args[i], "-"):
+			// other flags take no value
+		case args[i] == "check":
+			rest := append(append([]string{}, args[:i]...), args[i+1:]...)
+			return rest, nil
+		default:
+			return nil, fmt.Errorf("unknown command %q", args[i])
 		}
-		if a != "check" {
-			return nil, fmt.Errorf("unknown command %q", a)
-		}
-		rest := append(append([]string{}, args[:i]...), args[i+1:]...)
-		return rest, nil
 	}
 	return args, nil
 }

@@ -7,6 +7,9 @@
 *.out
 coverage.html
 
+# Sheriff reports
+sheriff-report.html
+
 # Editor and operating-system files
 .idea/
 .vscode/

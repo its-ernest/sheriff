@@ -72,11 +72,14 @@ The binary is written to `bin/sheriff`.
 sheriff check ./...
 sheriff check ./internal/...
 sheriff check -json ./...
+sheriff check -html ./...
 ```
 
 `check` is required; it is stripped by a small adapter in `cmd/sheriff` before
-package loading. `-json` selects JSON output instead of the default text report;
-`-flags` and `-V=full` behave as usual.
+package loading. `-json` selects JSON output instead of the default text report.
+`-html` writes a self-contained, interactive HTML report to a file (default
+`sheriff-report.html`, override with `-o PATH`) and prints a `file://` URL you
+can click to open it in a browser. `-flags` and `-V=full` behave as usual.
 
 **Current behavior:** the `nilptr`, `divzero`, `bounds` and `assert` analyzers
 are registered. They report dereferences of pointers that are provably nil,
@@ -99,7 +102,8 @@ By analyzer:
   nilptr   1
 ```
 
-The same data is available as JSON with `-json`, for use by other tools.
+The same data is available as JSON with `-json`, or as an interactive HTML page
+with `-html`, for use by other tools or for human review.
 
 The analyzers are conservative: when they cannot establish a value, they stay
 silent. Other panic categories and broader safety checks are not implemented
@@ -261,11 +265,12 @@ The interface is `sheriff check [flags] <packages>`. The command requires and
 strips a leading `check` subcommand; any other first positional argument is
 rejected with an explicit error and usage. Packages are loaded with
 `go/packages` and the analyzers are run with `go/analysis`'s checker. Sheriff
-formats the findings itself into a structured report (text, or JSON with
-`-json`) instead of delegating to the stock `multichecker` text output. This
-keeps the report structured and JSON-serialisable while still using the official
-loading and analysis infrastructure. Flags are limited to `-json` and `-flags`;
-if the command surface grows, that decision can be revisited.
+formats the findings itself into a structured report (text, JSON with `-json`,
+or an interactive HTML page with `-html`) instead of delegating to the stock
+`multichecker` text output. This keeps the report structured and JSON-serialisable
+while still using the official loading and analysis infrastructure. Flags are
+limited to `-json`, `-html`/`-o` and `-flags`; if the command surface grows, that
+decision can be revisited.
 
 ## Planned analysis directions
 
