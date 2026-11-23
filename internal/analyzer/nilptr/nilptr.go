@@ -91,7 +91,7 @@ func run(pass *analysis.Pass) (any, error) {
 	for _, file := range pass.Files {
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Body == nil || fn.Recv != nil {
+			if !ok || fn.Body == nil {
 				continue
 			}
 			if obj, ok := pass.TypesInfo.Defs[fn.Name].(*types.Func); ok {
@@ -149,9 +149,6 @@ func (a *analyzer) propagateCall(call *ast.CallExpr, s state) {
 		return
 	}
 	params := a.paramVars(fn)
-	if len(params) == 0 {
-		return
-	}
 	seed := newState()
 	seeded := false
 	for i, arg := range call.Args {
@@ -178,6 +175,12 @@ func (a *analyzer) propagateCall(call *ast.CallExpr, s state) {
 			}
 		}
 	}
+	if recv := a.recvVar(fn); recv != nil {
+		if n, ok := a.recvNilness(fn, call, func(e ast.Expr) nilness { return a.exprNilness(e, s) }); ok {
+			seed.nilness[recv] = n
+			seeded = true
+		}
+	}
 	if !seeded {
 		return
 	}
@@ -187,30 +190,69 @@ func (a *analyzer) propagateCall(call *ast.CallExpr, s state) {
 }
 
 // calleeFunc resolves a direct call to a package-level function declared in the
-// analyzed package, either referenced by name or held in a tracked function-value
-// variable. Calls through methods and imported functions are not resolved.
+// analyzed package, a call through a tracked function-value variable, or a
+// method call. Calls through imported functions are not resolved.
 func (a *analyzer) calleeFunc(call *ast.CallExpr, funcs map[*types.Var]*types.Func) *types.Func {
-	id, ok := unparen(call.Fun).(*ast.Ident)
-	if !ok {
-		return nil
-	}
-	switch obj := a.pass.TypesInfo.Uses[id].(type) {
-	case *types.Func:
-		if obj.Pkg() != a.pass.Pkg {
+	switch fun := unparen(call.Fun).(type) {
+	case *ast.Ident:
+		switch obj := a.pass.TypesInfo.Uses[fun].(type) {
+		case *types.Func:
+			if obj.Pkg() != a.pass.Pkg {
+				return nil
+			}
+			if sig, ok := obj.Type().(*types.Signature); !ok || sig.Recv() != nil {
+				return nil
+			}
+			return obj
+		case *types.Var:
+			fn, ok := funcs[obj]
+			if !ok || fn.Pkg() != a.pass.Pkg {
+				return nil
+			}
+			return fn
+		}
+	case *ast.SelectorExpr:
+		sel, ok := a.pass.TypesInfo.Selections[fun]
+		if !ok {
 			return nil
 		}
-		if sig, ok := obj.Type().(*types.Signature); !ok || sig.Recv() != nil {
-			return nil
-		}
-		return obj
-	case *types.Var:
-		fn, ok := funcs[obj]
+		fn, ok := sel.Obj().(*types.Func)
 		if !ok || fn.Pkg() != a.pass.Pkg {
+			return nil
+		}
+		if _, ok := a.funcs[fn]; !ok {
 			return nil
 		}
 		return fn
 	}
 	return nil
+}
+
+func (a *analyzer) recvVar(fn *types.Func) *types.Var {
+	sig, ok := fn.Type().(*types.Signature)
+	if !ok {
+		return nil
+	}
+	return sig.Recv()
+}
+
+// recvNilness returns the nilness of a method's receiver at a call site. A
+// pointer receiver called on a pointer uses that pointer's nilness; a pointer
+// receiver called on an addressable value is the address of that value and is
+// therefore non-nil. Value receivers cannot be nil and are not seeded.
+func (a *analyzer) recvNilness(fn *types.Func, call *ast.CallExpr, eval func(ast.Expr) nilness) (nilness, bool) {
+	recv := a.recvVar(fn)
+	if recv == nil || !isPointer(recv.Type()) {
+		return unknown, false
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return unknown, false
+	}
+	if isPointer(a.typeOf(sel.X)) {
+		return eval(sel.X), true
+	}
+	return nonNil, true
 }
 
 func (a *analyzer) paramVars(fn *types.Func) []*types.Var {
@@ -1322,6 +1364,11 @@ func (a *analyzer) seedEnv(fn *types.Func, call *ast.CallExpr, caller evalEnv) e
 			if fn, ok := a.exprFunc(arg); ok {
 				env.funcs[p] = fn
 			}
+		}
+	}
+	if recv := a.recvVar(fn); recv != nil {
+		if n, ok := a.recvNilness(fn, call, func(e ast.Expr) nilness { return a.evalNil(e, caller) }); ok {
+			env.nilness[recv] = n
 		}
 	}
 	return env

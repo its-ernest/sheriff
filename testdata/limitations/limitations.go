@@ -12,27 +12,14 @@ type Config struct {
 	Host string
 }
 
-// 1. Methods are not resolved.
-type Provider struct{}
-
-func (p *Provider) GetConfig() *Config {
-	return nil
-}
-
-func methodNil() {
-	var provider Provider
-	cfg := provider.GetConfig()
-	_ = cfg.Host // Potential nil pointer dereference.
-}
-
-// 2. Function values holding a function literal are not resolved.
+// 1. Function values holding a function literal are not resolved.
 func functionLiteralNil() {
 	factory := func() *Config { return nil }
 	cfg := factory()
 	_ = cfg.Host // Potential nil pointer dereference.
 }
 
-// 3. Imported functions are not resolved.
+// 2. Imported functions are not resolved.
 func importedFunctionNil() {
 	// Example to be added when testing an imported package:
 	// cfg := external.GetConfig()
@@ -43,7 +30,7 @@ func importedFunctionNil() {
 // NILPTR LIMITATIONS
 // ============================================================
 
-// 4. Pointer values through interfaces.
+// 3. Pointer values through interfaces.
 func interfaceNil() {
 	var cfg *Config
 	var value any = cfg
@@ -52,7 +39,7 @@ func interfaceNil() {
 	_ = actual.Host // Nil pointer dereference.
 }
 
-// 5. Pointer values through maps.
+// 4. Pointer values through maps.
 func mapNil() {
 	configs := map[string]*Config{
 		"server": nil,
@@ -62,7 +49,7 @@ func mapNil() {
 	_ = cfg.Host // Nil pointer dereference.
 }
 
-// 6. Pointer values through channels.
+// 5. Pointer values through channels.
 func channelNil() {
 	ch := make(chan *Config, 1)
 	ch <- nil
@@ -71,7 +58,7 @@ func channelNil() {
 	_ = cfg.Host // Nil pointer dereference.
 }
 
-// 7. Pointer values through goroutines.
+// 6. Pointer values through goroutines.
 func goroutineNil() {
 	var cfg *Config
 
@@ -84,14 +71,14 @@ func goroutineNil() {
 // DIVZERO LIMITATIONS
 // ============================================================
 
-// 8. Package-level variables.
+// 7. Package-level variables.
 var divisor = 0
 
 func packageVariableDivision() int {
 	return 100 / divisor
 }
 
-// 9. Values reached through pointers.
+// 8. Values reached through pointers.
 func pointerDivision() int {
 	zero := 0
 	divisor := &zero
@@ -99,7 +86,7 @@ func pointerDivision() int {
 	return 100 / *divisor
 }
 
-// 10. Function results.
+// 9. Function results.
 func getDivisor() int {
 	return 0
 }
@@ -108,7 +95,7 @@ func functionResultDivision() int {
 	return 100 / getDivisor()
 }
 
-// 11. Type parameters.
+// 10. Type parameters.
 func genericDivision[T ~int](a, b T) T {
 	return a / b
 }
@@ -121,7 +108,7 @@ func genericDivisionCall() int {
 // BOUNDS LIMITATIONS
 // ============================================================
 
-// 12. Capacity tracking.
+// 11. Capacity tracking.
 func capacityBounds() int {
 	values := make([]int, 1, 4)
 	values = values[:cap(values)]
@@ -129,7 +116,7 @@ func capacityBounds() int {
 	return values[3]
 }
 
-// 13. Loop induction values.
+// 12. Loop induction values.
 func loopBounds() int {
 	values := []int{10, 20, 30}
 
@@ -150,14 +137,14 @@ type Envelope struct {
 	Value any
 }
 
-// 14. Dynamic types through struct fields.
+// 13. Dynamic types through struct fields.
 func assertionThroughField() string {
 	envelope := Envelope{Value: 123}
 
 	return envelope.Value.(string)
 }
 
-// 15. Dynamic types through maps.
+// 14. Dynamic types through maps.
 func assertionThroughMap() string {
 	values := map[string]any{
 		"name": 123,
@@ -166,7 +153,7 @@ func assertionThroughMap() string {
 	return values["name"].(string)
 }
 
-// 16. Dynamic types through channels.
+// 15. Dynamic types through channels.
 func assertionThroughChannel() string {
 	ch := make(chan any, 1)
 	ch <- 123
@@ -175,7 +162,7 @@ func assertionThroughChannel() string {
 	return value.(string)
 }
 
-// 17. Dynamic types through type parameters.
+// 16. Dynamic types through type parameters.
 func assertionThroughGeneric[T any](value T) string {
 	return any(value).(string)
 }

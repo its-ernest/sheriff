@@ -524,3 +524,36 @@ func functionValueUnknown() {
 	cfg := factory()
 	_ = cfg.Field
 }
+
+type MethodHolder struct{ N int }
+
+func (m *MethodHolder) Get() *T { return nil }
+
+func (m *MethodHolder) GetOK() *T { return &T{} }
+
+func (m *MethodHolder) Value() int {
+	return m.N // want `nil pointer dereference: m is nil`
+}
+
+func methodCallNil() {
+	var h MethodHolder
+	cfg := h.Get()
+	_ = cfg.Field // want `nil pointer dereference: cfg is nil`
+}
+
+func methodCallNilPointer() {
+	var h *MethodHolder
+	cfg := h.Get()
+	_ = cfg.Field // want `nil pointer dereference: cfg is nil`
+}
+
+func callMethodNonNil() {
+	h := &MethodHolder{}
+	cfg := h.GetOK()
+	_ = cfg.Field
+}
+
+func callMethodNilReceiver() {
+	var h *MethodHolder
+	_ = h.Value()
+}
