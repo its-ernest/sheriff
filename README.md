@@ -120,9 +120,11 @@ Nilness is one of four states: nil, non-nil, **maybe nil** (a known possibility,
 for example a function with mixed return paths), or unknown (nilness could not be
 established). A dereference of a maybe-nil pointer is reported as a potential
 risk (`may be nil`); unknown values are not reported. Recursive cycles yield
-unknown. The analyzer does not reason through function values, methods, imported
-functions, interfaces, maps, channels or concurrent code. Variables whose address
-is taken or that are captured by a closure are treated as unknown.
+unknown. Function values that hold a same-package function are resolved, so a
+call through such a variable is analyzed like a direct call. The analyzer does
+not reason through methods, imported functions, interfaces, maps, channels or
+concurrent code. Variables whose address is taken or that are captured by a
+closure are treated as unknown.
 
 A missing diagnostic means the analyzer could not prove a nil dereference, not
 that the code is safe.
@@ -278,13 +280,15 @@ are the first focus; the project is not limited to panics.
   branches; it tracks integer constants for local variables so that
   `id := 10; f(id)` is reasoned about precisely. A callee that uses loops,
   `switch`, `select` or `goto` makes the result unknown rather than guessed, and
-  recursive cycles yield unknown. None of the analyzers resolve function values,
-  methods or imported functions. `nilptr` does not track pointer values through
-  interface values, maps, channels, function values or goroutines. `divzero`
-  does not track package-level variables, values reached through pointers,
-  function results or type parameters. `bounds` does not track capacities, loop
-  induction values or interprocedural lengths. `assert` does not track dynamic
-  types through fields, maps, channels or type parameters.
+  recursive cycles yield unknown. `nilptr` resolves function values that hold a
+  same-package function (including after reassignment), but not method values or
+  imported functions. None of the analyzers resolve methods or imported
+  functions. `nilptr` does not track pointer values through interface values,
+  maps, channels or goroutines. `divzero` does not track package-level
+  variables, values reached through pointers, function results or type
+  parameters. `bounds` does not track capacities, loop induction values or
+  interprocedural lengths. `assert` does not track dynamic types through fields,
+  maps, channels or type parameters.
 - Variables whose address is taken or that are captured by a closure are not
   tracked by any analyzer, even when they are never modified indirectly.
 - `nilptr` does not report nil interfaces, nil function calls, nil map writes or

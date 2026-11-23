@@ -42,18 +42,21 @@ const (
 type state struct {
 	nilness map[*types.Var]nilness
 	ints    map[*types.Var]int64
+	funcs   map[*types.Var]*types.Func
 }
 
 func newState() state {
 	return state{
 		nilness: make(map[*types.Var]nilness),
 		ints:    make(map[*types.Var]int64),
+		funcs:   make(map[*types.Var]*types.Func),
 	}
 }
 
 func forget(s state, v *types.Var) {
 	delete(s.nilness, v)
 	delete(s.ints, v)
+	delete(s.funcs, v)
 }
 
 func forgetAll(s state, vars map[*types.Var]struct{}) {
@@ -137,7 +140,7 @@ func (a *analyzer) propagateCall(call *ast.CallExpr, s state) {
 	if a.depth > 0 {
 		return
 	}
-	fn := a.calleeFunc(call)
+	fn := a.calleeFunc(call, s.funcs)
 	if fn == nil {
 		return
 	}
@@ -184,22 +187,30 @@ func (a *analyzer) propagateCall(call *ast.CallExpr, s state) {
 }
 
 // calleeFunc resolves a direct call to a package-level function declared in the
-// analyzed package. Calls through function values, methods and imported
-// functions are not resolved.
-func (a *analyzer) calleeFunc(call *ast.CallExpr) *types.Func {
+// analyzed package, either referenced by name or held in a tracked function-value
+// variable. Calls through methods and imported functions are not resolved.
+func (a *analyzer) calleeFunc(call *ast.CallExpr, funcs map[*types.Var]*types.Func) *types.Func {
 	id, ok := unparen(call.Fun).(*ast.Ident)
 	if !ok {
 		return nil
 	}
-	fn, _ := a.pass.TypesInfo.Uses[id].(*types.Func)
-	if fn == nil || fn.Pkg() != a.pass.Pkg {
-		return nil
+	switch obj := a.pass.TypesInfo.Uses[id].(type) {
+	case *types.Func:
+		if obj.Pkg() != a.pass.Pkg {
+			return nil
+		}
+		if sig, ok := obj.Type().(*types.Signature); !ok || sig.Recv() != nil {
+			return nil
+		}
+		return obj
+	case *types.Var:
+		fn, ok := funcs[obj]
+		if !ok || fn.Pkg() != a.pass.Pkg {
+			return nil
+		}
+		return fn
 	}
-	sig, ok := fn.Type().(*types.Signature)
-	if !ok || sig.Recv() != nil {
-		return nil
-	}
-	return fn
+	return nil
 }
 
 func (a *analyzer) paramVars(fn *types.Func) []*types.Var {
@@ -607,7 +618,7 @@ func (a *analyzer) analyzeAssign(st *ast.AssignStmt, s state) state {
 			values[i] = a.eval(rhs, s)
 		}
 		for i, lhs := range st.Lhs {
-			a.assign(lhs, values[i].nilness, values[i].intVal, values[i].hasInt, s)
+			a.assign(lhs, values[i], s)
 		}
 		return s
 	}
@@ -616,21 +627,23 @@ func (a *analyzer) analyzeAssign(st *ast.AssignStmt, s state) state {
 	// (a call, map lookup, type assertion, and so on) provide no definite
 	// value information.
 	for _, lhs := range st.Lhs {
-		a.assign(lhs, unknown, 0, false, s)
+		a.assign(lhs, value{nilness: unknown}, s)
 	}
 	return s
 }
 
-// value is the nilness and integer constant of an expression.
+// value is the nilness, integer constant and function held by an expression.
 type value struct {
 	nilness nilness
 	intVal  int64
 	hasInt  bool
+	fn      *types.Func
 }
 
 func (a *analyzer) eval(expr ast.Expr, s state) value {
 	v := value{nilness: a.exprNilness(expr, s)}
 	v.intVal, v.hasInt = a.exprInt(expr, s)
+	v.fn, _ = a.exprFunc(expr)
 	return v
 }
 
@@ -685,23 +698,8 @@ func (a *analyzer) analyzeDecl(st *ast.DeclStmt, s state) state {
 				values[i] = a.eval(val, s)
 			}
 			for i, name := range vs.Names {
-				v := a.varOf(name)
-				if v == nil || !a.track(v) {
-					continue
-				}
-				if isPointer(v.Type()) {
-					if values[i].nilness == unknown {
-						delete(s.nilness, v)
-					} else {
-						s.nilness[v] = values[i].nilness
-					}
-				}
-				if isInteger(v.Type()) {
-					if values[i].hasInt {
-						s.ints[v] = values[i].intVal
-					} else {
-						delete(s.ints, v)
-					}
+				if v := a.varOf(name); v != nil && a.track(v) {
+					a.assign(name, values[i], s)
 				}
 			}
 			continue
@@ -844,7 +842,7 @@ func (a *analyzer) exprNilness(expr ast.Expr, s state) nilness {
 		if a.isNilConversion(e) {
 			return isNil
 		}
-		return a.evalCall(e, evalEnv{nilness: s.nilness, ints: s.ints})
+		return a.evalCall(e, evalEnv{nilness: s.nilness, ints: s.ints, funcs: s.funcs})
 	}
 	return unknown
 }
@@ -911,6 +909,31 @@ func isInteger(t types.Type) bool {
 	return ok && b.Info()&types.IsInteger != 0
 }
 
+func isFunc(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	_, ok := t.Underlying().(*types.Signature)
+	return ok
+}
+
+// exprFunc resolves an expression to a same-package function referenced by
+// name. It is used to track function values held in local variables.
+func (a *analyzer) exprFunc(expr ast.Expr) (*types.Func, bool) {
+	id, ok := unparen(expr).(*ast.Ident)
+	if !ok {
+		return nil, false
+	}
+	fn, ok := a.pass.TypesInfo.Uses[id].(*types.Func)
+	if !ok || fn.Pkg() != a.pass.Pkg {
+		return nil, false
+	}
+	if _, ok := a.funcs[fn]; !ok {
+		return nil, false
+	}
+	return fn, true
+}
+
 func isPointerToArray(t types.Type) bool {
 	if t == nil {
 		return false
@@ -923,23 +946,30 @@ func isPointerToArray(t types.Type) bool {
 	return ok
 }
 
-func (a *analyzer) assign(lhs ast.Expr, n nilness, intVal int64, hasInt bool, s state) {
+func (a *analyzer) assign(lhs ast.Expr, val value, s state) {
 	v := a.varOf(lhs)
 	if v == nil || !a.track(v) {
 		return
 	}
 	if isPointer(v.Type()) {
-		if n == unknown {
+		if val.nilness == unknown {
 			delete(s.nilness, v)
 		} else {
-			s.nilness[v] = n
+			s.nilness[v] = val.nilness
 		}
 	}
 	if isInteger(v.Type()) {
-		if hasInt {
-			s.ints[v] = intVal
+		if val.hasInt {
+			s.ints[v] = val.intVal
 		} else {
 			delete(s.ints, v)
+		}
+	}
+	if isFunc(v.Type()) {
+		if val.fn != nil {
+			s.funcs[v] = val.fn
+		} else {
+			delete(s.funcs, v)
 		}
 	}
 }
@@ -1094,6 +1124,9 @@ func clone(s state) state {
 	for v, n := range s.ints {
 		out.ints[v] = n
 	}
+	for v, n := range s.funcs {
+		out.funcs[v] = n
+	}
 	return out
 }
 
@@ -1130,6 +1163,11 @@ func merge(a, b state) state {
 	for v, an := range out.ints {
 		if bv, ok := b.ints[v]; !ok || bv != an {
 			delete(out.ints, v)
+		}
+	}
+	for v, an := range out.funcs {
+		if bv, ok := b.funcs[v]; !ok || bv != an {
+			delete(out.funcs, v)
 		}
 	}
 	return out
@@ -1181,12 +1219,14 @@ func unparen(expr ast.Expr) ast.Expr {
 type evalEnv struct {
 	nilness map[*types.Var]nilness
 	ints    map[*types.Var]int64
+	funcs   map[*types.Var]*types.Func
 }
 
 func newEvalEnv() evalEnv {
 	return evalEnv{
 		nilness: make(map[*types.Var]nilness),
 		ints:    make(map[*types.Var]int64),
+		funcs:   make(map[*types.Var]*types.Func),
 	}
 }
 
@@ -1198,6 +1238,9 @@ func (e evalEnv) clone() evalEnv {
 	for v, n := range e.ints {
 		out.ints[v] = n
 	}
+	for v, n := range e.funcs {
+		out.funcs[v] = n
+	}
 	return out
 }
 
@@ -1207,7 +1250,7 @@ func (e evalEnv) clone() evalEnv {
 // produce different results, and branch conditions that are decidable from the
 // bound arguments are pruned. Recursive cycles yield unknown.
 func (a *analyzer) evalCall(call *ast.CallExpr, caller evalEnv) nilness {
-	fn := a.calleeFunc(call)
+	fn := a.calleeFunc(call, caller.funcs)
 	if fn == nil {
 		return unknown
 	}
@@ -1272,6 +1315,12 @@ func (a *analyzer) seedEnv(fn *types.Func, call *ast.CallExpr, caller evalEnv) e
 		if isInteger(p.Type()) {
 			if v, ok := a.evalInt(arg, caller); ok {
 				env.ints[p] = v
+			}
+			continue
+		}
+		if isFunc(p.Type()) {
+			if fn, ok := a.exprFunc(arg); ok {
+				env.funcs[p] = fn
 			}
 		}
 	}
@@ -1383,12 +1432,20 @@ func (a *analyzer) evalAssignTo(lhs, rhs ast.Expr, env *evalEnv) {
 			delete(env.ints, v)
 		}
 	}
+	if isFunc(v.Type()) {
+		if fn, ok := a.exprFunc(rhs); ok {
+			env.funcs[v] = fn
+		} else {
+			delete(env.funcs, v)
+		}
+	}
 }
 
 func (a *analyzer) evalForget(lhs ast.Expr, env *evalEnv) {
 	if v := a.varOf(lhs); v != nil {
 		delete(env.nilness, v)
 		delete(env.ints, v)
+		delete(env.funcs, v)
 	}
 }
 
@@ -1609,6 +1666,11 @@ func mergeEval(a, b evalEnv) evalEnv {
 	for v, an := range a.ints {
 		if bn, ok := b.ints[v]; ok && bn == an {
 			out.ints[v] = an
+		}
+	}
+	for v, an := range a.funcs {
+		if bn, ok := b.funcs[v]; ok && bn == an {
+			out.funcs[v] = an
 		}
 	}
 	return out

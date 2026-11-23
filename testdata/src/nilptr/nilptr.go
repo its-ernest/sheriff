@@ -495,3 +495,32 @@ func callClassifyMultiAssignConst() {
 	p := classify(id)
 	_ = p.Field
 }
+
+func nilFactory() *T { return nil }
+
+func functionValueNil() {
+	factory := nilFactory
+	cfg := factory()
+	_ = cfg.Field // want `nil pointer dereference: cfg is nil`
+}
+
+func nonNilFactory() *T { return &T{} }
+
+func functionValueNonNil() {
+	factory := nonNilFactory
+	cfg := factory()
+	_ = cfg.Field
+}
+
+func functionValueReassigned() {
+	factory := nonNilFactory
+	factory = nilFactory
+	cfg := factory()
+	_ = cfg.Field // want `nil pointer dereference: cfg is nil`
+}
+
+func functionValueUnknown() {
+	var factory func() *T
+	cfg := factory()
+	_ = cfg.Field
+}
