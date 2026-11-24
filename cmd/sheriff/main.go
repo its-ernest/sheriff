@@ -131,7 +131,6 @@ func run(argv []string) int {
 	})
 
 	report := reporting.Report{Packages: len(initial), Findings: findings}
-	fileOut := false
 	switch {
 	case *htmlOut:
 		path := *outPath
@@ -153,7 +152,6 @@ func run(argv []string) int {
 			abs = path
 		}
 		fmt.Printf("%d finding(s) across %d package(s). Report: file://%s\n", len(findings), len(initial), abs)
-		fileOut = true
 	case *jsonOut:
 		if err := report.WriteJSON(os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
@@ -165,16 +163,14 @@ func run(argv []string) int {
 				fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
 				return 1
 			}
-			fileOut = true
-		} else {
-			report.WriteText(os.Stdout)
 		}
+		report.WriteText(os.Stdout)
 	}
 
 	if pkgErrors > 0 || analysisErrors > 0 {
 		return 1
 	}
-	if *jsonOut || *htmlOut || fileOut {
+	if *jsonOut || *htmlOut {
 		return 0
 	}
 	if len(findings) > 0 {

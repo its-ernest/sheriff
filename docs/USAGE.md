@@ -66,9 +66,10 @@ output = ".sheriff/reports"
 ```
 
 With this, `sheriff check ./...` writes `sheriff-report.html` and
-`sheriff-report.json` into `.sheriff/reports/` instead of printing text. The
-`-json` and `-html` flags override the file. The `[project]`, `[analysis]` and
-`[remediation]` sections are parsed for upcoming features. A sample lives at
+`sheriff-report.json` into `.sheriff/reports/` and still prints the text
+overview to stdout. The `-json` and `-html` flags override the file (and print
+only that format). The `[project]`, `[analysis]` and `[remediation]` sections
+are parsed for upcoming features. A sample lives at
 [`sheriff.ini`](../sheriff.ini).
 
 ## Exit codes
