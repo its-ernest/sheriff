@@ -34,13 +34,16 @@ not run Sheriff per file or per directory.
 ## Pre-flight: race detector and go vet
 
 `Sheriff check` reads the config (the source of truth). When `[analysis]` enables
-them, it runs the race detector (`go test -race`) and then `go vet` first, and
-halts on the first failure before running its own analyzers:
+them, it runs the test suite (with the race detector when `races` is set) and
+then `go vet` first, and halts on the first failure before running its own
+analyzers. `tests` gates all test execution, so `tests = false` skips both the
+plain test run and the race detector:
 
 ```ini
 [analysis]
-vet = true
+tests = true
 races = true
+vet = true
 ```
 
 Sheriff does not reimplement these tools; it wraps them and returns their exit

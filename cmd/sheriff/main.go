@@ -33,7 +33,8 @@ const usage = `usage: sheriff check [flags] <packages>
 
 Run Sheriff's safety analyzers over the named Go packages and print a
 structured report. The [analysis] section of the config file can enable a
-race-detector and go vet pre-flight that halts on failure.
+test/race pre-flight and go vet that halts on failure. The tests flag gates all
+test execution.
 
 Flags:
   -json     emit the report as JSON
@@ -109,12 +110,17 @@ func runCheck(prog string, args []string) int {
 		return 2
 	}
 
-	// Pre-flight gates, driven by the config (the source of truth): the race
-	// detector first, then go vet. If either fails, halt before running
-	// Sheriff's own analyzers.
+	// Pre-flight gates, driven by the config (the source of truth): the test
+	// suite (with the race detector when enabled), then go vet. If any fails,
+	// halt before running Sheriff's own analyzers.
 	if fileCfg != nil {
-		if fileCfg.Analysis.Races {
-			if code := runGo(prog, append([]string{"test", "-race"}, patterns...)...); code != 0 {
+		if fileCfg.Analysis.Tests {
+			testArgs := []string{"test"}
+			if fileCfg.Analysis.Races {
+				testArgs = append(testArgs, "-race")
+			}
+			testArgs = append(testArgs, patterns...)
+			if code := runGo(prog, testArgs...); code != 0 {
 				return code
 			}
 		}
