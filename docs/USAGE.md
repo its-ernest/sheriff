@@ -31,6 +31,16 @@ sheriff check ./cmd/server
 `./...` walks the whole module — `cmd/...`, `internal/...`, `pkg/...` — so you do
 not run Sheriff per file or per directory.
 
+## Wrapping go vet and the race detector
+
+Sheriff does not reimplement these tools; it wraps them and returns their exit
+code:
+
+```sh
+sheriff vet ./...      # runs go vet ./...
+sheriff race ./...     # runs go test -race ./...
+```
+
 ## Flags
 
 | Flag | Meaning |

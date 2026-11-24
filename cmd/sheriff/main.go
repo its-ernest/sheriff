@@ -8,9 +8,11 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -27,12 +29,14 @@ import (
 // version is Sheriff's own version, distinct from the analyzer set.
 const version = "devel"
 
-const usage = `usage: sheriff check [flags] <packages>
+const usage = `usage: sheriff <command> [flags] <packages>
 
-Run Sheriff's safety analyzers over the named Go packages and print a
-structured report.
+Commands:
+  check   run Sheriff's safety analyzers and print a structured report
+  vet     wrap "go vet"
+  race    wrap "go test -race"
 
-Flags:
+Flags (check):
   -json     emit the report as JSON
   -html     write an interactive HTML report to a file
   -o path   output file for -html (default: <output>/sheriff-report.html)
@@ -60,12 +64,22 @@ func run(argv []string) int {
 		return 0
 	}
 
-	args, err := stripCheck(args)
+	sub, rest, err := splitSub(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n\n%s", prog, err, usage)
 		return 2
 	}
 
+	switch sub {
+	case "vet":
+		return runGo(prog, append([]string{"vet"}, rest...)...)
+	case "race":
+		return runGo(prog, append([]string{"test", "-race"}, rest...)...)
+	}
+	return runCheck(prog, rest)
+}
+
+func runCheck(prog string, args []string) int {
 	fs := flag.NewFlagSet(prog, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
@@ -289,11 +303,11 @@ func printAnalyzerFlags(analyzers []*analysis.Analyzer) int {
 	return 0
 }
 
-// stripCheck requires and removes the "check" subcommand so that only package
-// patterns (and flags) reach the driver. A repeated program name or a missing
-// subcommand is rejected with an explicit error. Flags that take a separate
-// value are skipped while scanning for the subcommand.
-func stripCheck(args []string) ([]string, error) {
+// splitSub finds and removes the subcommand (check, vet or race) so that only
+// that subcommand's arguments remain. Flags that take a separate value are
+// skipped while scanning. A non-flag first positional that is not a known
+// subcommand is rejected with an explicit error.
+func splitSub(args []string) (string, []string, error) {
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "-o":
@@ -302,12 +316,31 @@ func stripCheck(args []string) ([]string, error) {
 			i++ // the config path is a separate value
 		case strings.HasPrefix(args[i], "-"):
 			// other flags take no value
-		case args[i] == "check":
+		case args[i] == "check" || args[i] == "vet" || args[i] == "race":
 			rest := append(append([]string{}, args[:i]...), args[i+1:]...)
-			return rest, nil
+			return args[i], rest, nil
 		default:
-			return nil, fmt.Errorf("unknown command %q", args[i])
+			return "", nil, fmt.Errorf("unknown command %q", args[i])
 		}
 	}
-	return args, nil
+	return "check", args, nil
+}
+
+// runGo runs an external go subcommand (for example "vet" or "test -race") and
+// returns its exit code. Sheriff does not reimplement these tools; it wraps
+// them.
+func runGo(prog string, args ...string) int {
+	cmd := exec.Command("go", args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return ee.ExitCode()
+		}
+		fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
+		return 1
+	}
+	return 0
 }
