@@ -212,11 +212,22 @@ func (a *analyzer) calleeFunc(call *ast.CallExpr, funcs map[*types.Var]*types.Fu
 			return fn
 		}
 	case *ast.SelectorExpr:
-		sel, ok := a.pass.TypesInfo.Selections[fun]
-		if !ok {
-			return nil
+		// Method call x.M(...).
+		if sel, ok := a.pass.TypesInfo.Selections[fun]; ok {
+			if sel.Kind() != types.MethodVal {
+				return nil
+			}
+			fn, ok := sel.Obj().(*types.Func)
+			if !ok || fn.Pkg() != a.pass.Pkg {
+				return nil
+			}
+			if _, ok := a.funcs[fn]; !ok {
+				return nil
+			}
+			return fn
 		}
-		fn, ok := sel.Obj().(*types.Func)
+		// Qualified function pkg.F(...).
+		fn, ok := a.pass.TypesInfo.Uses[fun.Sel].(*types.Func)
 		if !ok || fn.Pkg() != a.pass.Pkg {
 			return nil
 		}
@@ -421,7 +432,22 @@ func (a *analyzer) analyzeIf(st *ast.IfStmt, s state) state {
 	if st.Else != nil {
 		elseEnd = a.analyzeStmt(st.Else, elseState)
 	}
-	return merge(thenEnd, elseEnd)
+
+	// A branch that ends in a return (or other terminating statement) does not
+	// fall through, so it must not contribute to the state after the if. Only
+	// merge branches that actually reach the following statement.
+	thenTerm := terminates(st.Body)
+	elseTerm := st.Else != nil && terminates(st.Else)
+	switch {
+	case thenTerm && elseTerm:
+		return thenEnd
+	case thenTerm:
+		return elseEnd
+	case elseTerm:
+		return thenEnd
+	default:
+		return merge(thenEnd, elseEnd)
+	}
 }
 
 func (a *analyzer) analyzeFor(st *ast.ForStmt, s state) state {

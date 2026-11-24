@@ -557,3 +557,10 @@ func callMethodNilReceiver() {
 	var h *MethodHolder
 	_ = h.Value()
 }
+
+func guardEarlyReturn(p *T) int {
+	if p == nil {
+		return 0
+	}
+	return p.Field // safe: p is non-nil past the guard
+}
