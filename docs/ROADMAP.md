@@ -10,13 +10,13 @@ directions, not current capabilities.
 - Improve interprocedural tracking and reduce false positives.
 - Keep diagnostics explainable and well tested.
 
-## v0.2.x
+## v0.5.x
 
 - More analyzers, including invalid channel operations.
 - Deeper interprocedural and control-flow reasoning.
 - Broader coverage of common panic classes.
 
-## v0.3.x
+## v0.7.x
 
 - Concurrency-aware analysis (channels, goroutines, shared state).
 - More safety properties beyond panics.
