@@ -29,14 +29,13 @@ import (
 // version is Sheriff's own version, distinct from the analyzer set.
 const version = "devel"
 
-const usage = `usage: sheriff <command> [flags] <packages>
+const usage = `usage: sheriff check [flags] <packages>
 
-Commands:
-  check   run Sheriff's safety analyzers and print a structured report
-  vet     wrap "go vet"
-  race    wrap "go test -race"
+Run Sheriff's safety analyzers over the named Go packages and print a
+structured report. The [analysis] section of the config file can enable a
+race-detector and go vet pre-flight that halts on failure.
 
-Flags (check):
+Flags:
   -json     emit the report as JSON
   -html     write an interactive HTML report to a file
   -o path   output file for -html (default: <output>/sheriff-report.html)
@@ -64,21 +63,16 @@ func run(argv []string) int {
 		return 0
 	}
 
-	sub, rest, err := splitSub(args)
+	_, rest, err := splitSub(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n\n%s", prog, err, usage)
 		return 2
 	}
 
-	switch sub {
-	case "vet":
-		return runGo(prog, append([]string{"vet"}, rest...)...)
-	case "race":
-		return runGo(prog, append([]string{"test", "-race"}, rest...)...)
-	}
 	return runCheck(prog, rest)
 }
 
+// runCheck runs Sheriff's own analyzers over the named packages.
 func runCheck(prog string, args []string) int {
 	fs := flag.NewFlagSet(prog, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -113,6 +107,22 @@ func runCheck(prog string, args []string) int {
 	if len(patterns) == 0 {
 		fmt.Fprint(os.Stderr, usage)
 		return 2
+	}
+
+	// Pre-flight gates, driven by the config (the source of truth): the race
+	// detector first, then go vet. If either fails, halt before running
+	// Sheriff's own analyzers.
+	if fileCfg != nil {
+		if fileCfg.Analysis.Races {
+			if code := runGo(prog, append([]string{"test", "-race"}, patterns...)...); code != 0 {
+				return code
+			}
+		}
+		if fileCfg.Analysis.Vet {
+			if code := runGo(prog, append([]string{"vet"}, patterns...)...); code != 0 {
+				return code
+			}
+		}
 	}
 
 	cfg := &packages.Config{Mode: packages.LoadAllSyntax | packages.NeedModule}
@@ -303,10 +313,10 @@ func printAnalyzerFlags(analyzers []*analysis.Analyzer) int {
 	return 0
 }
 
-// splitSub finds and removes the subcommand (check, vet or race) so that only
-// that subcommand's arguments remain. Flags that take a separate value are
-// skipped while scanning. A non-flag first positional that is not a known
-// subcommand is rejected with an explicit error.
+// splitSub finds and removes the "check" subcommand so that only its arguments
+// remain. Flags that take a separate value are skipped while scanning. A
+// non-flag first positional that is not a known subcommand is rejected with an
+// explicit error.
 func splitSub(args []string) (string, []string, error) {
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -316,7 +326,7 @@ func splitSub(args []string) (string, []string, error) {
 			i++ // the config path is a separate value
 		case strings.HasPrefix(args[i], "-"):
 			// other flags take no value
-		case args[i] == "check" || args[i] == "vet" || args[i] == "race":
+		case args[i] == "check":
 			rest := append(append([]string{}, args[:i]...), args[i+1:]...)
 			return args[i], rest, nil
 		default:

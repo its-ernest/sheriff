@@ -11,6 +11,7 @@ name = "myapp"
 
 [analysis]
 dependencies = true
+vet = true
 tests = true
 races = true
 vulnerabilities = true
@@ -36,7 +37,7 @@ func TestParse(t *testing.T) {
 	if cfg.Project.Name != "myapp" {
 		t.Errorf("name = %q", cfg.Project.Name)
 	}
-	if !cfg.Analysis.Dependencies || !cfg.Analysis.Tests || !cfg.Analysis.Races || !cfg.Analysis.Vulnerabilities {
+	if !cfg.Analysis.Dependencies || !cfg.Analysis.Vet || !cfg.Analysis.Tests || !cfg.Analysis.Races || !cfg.Analysis.Vulnerabilities {
 		t.Errorf("analysis = %+v", cfg.Analysis)
 	}
 	if cfg.Remediation.Dependencies {

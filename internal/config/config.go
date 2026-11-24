@@ -27,6 +27,7 @@ type Project struct {
 
 type Analysis struct {
 	Dependencies    bool
+	Vet             bool
 	Tests           bool
 	Races           bool
 	Vulnerabilities bool
@@ -102,6 +103,8 @@ func (c *Config) set(section, key, val string) {
 		switch key {
 		case "dependencies":
 			c.Analysis.Dependencies = parseBool(val)
+		case "vet":
+			c.Analysis.Vet = parseBool(val)
 		case "tests":
 			c.Analysis.Tests = parseBool(val)
 		case "races":

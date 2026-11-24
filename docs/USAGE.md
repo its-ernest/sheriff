@@ -31,15 +31,20 @@ sheriff check ./cmd/server
 `./...` walks the whole module — `cmd/...`, `internal/...`, `pkg/...` — so you do
 not run Sheriff per file or per directory.
 
-## Wrapping go vet and the race detector
+## Pre-flight: race detector and go vet
+
+`Sheriff check` reads the config (the source of truth). When `[analysis]` enables
+them, it runs the race detector (`go test -race`) and then `go vet` first, and
+halts on the first failure before running its own analyzers:
+
+```ini
+[analysis]
+vet = true
+races = true
+```
 
 Sheriff does not reimplement these tools; it wraps them and returns their exit
-code:
-
-```sh
-sheriff vet ./...      # runs go vet ./...
-sheriff race ./...     # runs go test -race ./...
-```
+code.
 
 ## Flags
 
