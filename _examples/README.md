@@ -42,3 +42,24 @@ Each example passes the risky value as an argument to a helper, so the
 diagnostic is reported inside the callee. This exercises the analyzers'
 interprocedural parameter tracking: the argument's known value is followed into
 the function that uses it.
+
+## Full example projects
+
+Two realistic, multi-package projects. Each is its own Go module (with a
+`go.mod`) and is meant to be analyzed as a whole project, not file by file.
+
+| Project | Packages | Defects |
+| --- | --- | --- |
+| [`http-scanner`](./http-scanner) | `cmd/scanner`, `internal/{scanner,parse,middleware}` | nilptr, bounds, assert |
+| [`concurrent-pipeline`](./concurrent-pipeline) | `cmd/pipeline`, `internal/pipeline` | nilptr, bounds, assert (channels/goroutines) |
+
+Run and analyze a project from inside its directory:
+
+```sh
+cd _examples/http-scanner
+go run ./cmd/scanner     # panics
+sheriff check ./...      # reports defects across every package
+```
+
+`./...` scans every package in the module (`cmd/...`, `internal/...`, `pkg/...`),
+so there is no need to run Sheriff per file.
