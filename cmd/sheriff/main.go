@@ -20,6 +20,7 @@ import (
 	"golang.org/x/tools/go/packages"
 
 	"github.com/its-ernest/sheriff/internal/analyzer"
+	"github.com/its-ernest/sheriff/internal/config"
 	"github.com/its-ernest/sheriff/internal/reporting"
 )
 
@@ -35,6 +36,7 @@ Flags:
   -json     emit the report as JSON
   -html     write an interactive HTML report to a file
   -o path   output file for -html (default "sheriff-report.html")
+  -config   config file (default "sheriff.ini")
 `
 
 func main() {
@@ -70,6 +72,7 @@ func run(argv []string) int {
 	jsonOut := fs.Bool("json", false, "emit the report as JSON")
 	htmlOut := fs.Bool("html", false, "write an HTML report to a file")
 	outPath := fs.String("o", "sheriff-report.html", "output file for -html")
+	configPath := fs.String("config", "sheriff.ini", "config file (INI)")
 	printFlags := fs.Bool("flags", false, "print analyzer flags as JSON and exit")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -82,6 +85,14 @@ func run(argv []string) int {
 
 	if *printFlags {
 		return printAnalyzerFlags(analyzers)
+	}
+
+	var fileCfg *config.Config
+	if c, err := config.Load(*configPath); err == nil {
+		fileCfg = &c
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
+		return 2
 	}
 
 	patterns := fs.Args()
@@ -120,6 +131,7 @@ func run(argv []string) int {
 	})
 
 	report := reporting.Report{Packages: len(initial), Findings: findings}
+	fileOut := false
 	switch {
 	case *htmlOut:
 		if err := writeHTML(*outPath, report); err != nil {
@@ -131,25 +143,76 @@ func run(argv []string) int {
 			abs = *outPath
 		}
 		fmt.Printf("%d finding(s) across %d package(s). Report: file://%s\n", len(findings), len(initial), abs)
+		fileOut = true
 	case *jsonOut:
 		if err := report.WriteJSON(os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
 			return 1
 		}
 	default:
-		report.WriteText(os.Stdout)
+		if fileCfg != nil && (fileCfg.Report.HTML || fileCfg.Report.JSON) {
+			if err := writeConfigReports(fileCfg, report); err != nil {
+				fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
+				return 1
+			}
+			fileOut = true
+		} else {
+			report.WriteText(os.Stdout)
+		}
 	}
 
 	if pkgErrors > 0 || analysisErrors > 0 {
 		return 1
 	}
-	if *jsonOut || *htmlOut {
+	if *jsonOut || *htmlOut || fileOut {
 		return 0
 	}
 	if len(findings) > 0 {
 		return 3
 	}
 	return 0
+}
+
+// writeConfigReports writes the report files selected by the [report] section.
+func writeConfigReports(cfg *config.Config, report reporting.Report) error {
+	dir := cfg.Report.Output
+	if dir == "" {
+		dir = "."
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if cfg.Report.JSON {
+		path := filepath.Join(dir, "sheriff-report.json")
+		if err := writeJSON(path, report); err != nil {
+			return err
+		}
+		fmt.Printf("JSON report: %s\n", path)
+	}
+	if cfg.Report.HTML {
+		path := filepath.Join(dir, "sheriff-report.html")
+		if err := writeHTML(path, report); err != nil {
+			return err
+		}
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			abs = path
+		}
+		fmt.Printf("HTML report: file://%s\n", abs)
+	}
+	return nil
+}
+
+func writeJSON(path string, report reporting.Report) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	if err := report.WriteJSON(f); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func writeHTML(path string, report reporting.Report) error {
@@ -224,6 +287,8 @@ func stripCheck(args []string) ([]string, error) {
 		switch {
 		case args[i] == "-o":
 			i++ // the output path is a separate value
+		case args[i] == "-config":
+			i++ // the config path is a separate value
 		case strings.HasPrefix(args[i], "-"):
 			// other flags take no value
 		case args[i] == "check":

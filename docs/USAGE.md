@@ -53,6 +53,24 @@ With `-html`, Sheriff prints a `file://` URL you can click to open the report in
 a browser. The report is a single self-contained file (no external assets) with a
 summary, a filter box, and collapsible per-analyzer groups.
 
+## Configuration
+
+Sheriff reads an INI file (`sheriff.ini` by default; override with `-config`).
+The `[report]` section selects the output formats and the output directory:
+
+```ini
+[report]
+html = true
+json = true
+output = ".sheriff/reports"
+```
+
+With this, `sheriff check ./...` writes `sheriff-report.html` and
+`sheriff-report.json` into `.sheriff/reports/` instead of printing text. The
+`-json` and `-html` flags override the file. The `[project]`, `[analysis]` and
+`[remediation]` sections are parsed for upcoming features. A sample lives at
+[`sheriff.ini`](../sheriff.ini).
+
 ## Exit codes
 
 | Code | Meaning |

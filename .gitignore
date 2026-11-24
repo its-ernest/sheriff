@@ -9,6 +9,7 @@ coverage.html
 
 # Sheriff reports
 sheriff-report.html
+.sheriff/
 
 # Editor and operating-system files
 .idea/
