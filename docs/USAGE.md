@@ -37,7 +37,7 @@ not run Sheriff per file or per directory.
 | --- | --- |
 | `-json` | print the report as JSON to stdout |
 | `-html` | write an interactive HTML report to a file |
-| `-o path` | output file for `-html` (default `sheriff-report.html`) |
+| `-o path` | output file for `-html` (default `<output>/sheriff-report.html`, where `<output>` is the config's `[report].output` or `.`) |
 | `-flags` | print the analyzers' flags as JSON and exit |
 | `-V=full` | print the tool version and exit |
 

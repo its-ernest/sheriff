@@ -35,7 +35,7 @@ structured report.
 Flags:
   -json     emit the report as JSON
   -html     write an interactive HTML report to a file
-  -o path   output file for -html (default "sheriff-report.html")
+  -o path   output file for -html (default: <output>/sheriff-report.html)
   -config   config file (default "sheriff.ini")
 `
 
@@ -71,7 +71,7 @@ func run(argv []string) int {
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 	jsonOut := fs.Bool("json", false, "emit the report as JSON")
 	htmlOut := fs.Bool("html", false, "write an HTML report to a file")
-	outPath := fs.String("o", "sheriff-report.html", "output file for -html")
+	outPath := fs.String("o", "", "output file for -html (default: <output>/sheriff-report.html)")
 	configPath := fs.String("config", "sheriff.ini", "config file (INI)")
 	printFlags := fs.Bool("flags", false, "print analyzer flags as JSON and exit")
 	if err := fs.Parse(args); err != nil {
@@ -134,13 +134,23 @@ func run(argv []string) int {
 	fileOut := false
 	switch {
 	case *htmlOut:
-		if err := writeHTML(*outPath, report); err != nil {
+		path := *outPath
+		if path == "" {
+			path = filepath.Join(outputDir(fileCfg), "sheriff-report.html")
+		}
+		if dir := filepath.Dir(path); dir != "" {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
+				return 1
+			}
+		}
+		if err := writeHTML(path, report); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
 			return 1
 		}
-		abs, err := filepath.Abs(*outPath)
+		abs, err := filepath.Abs(path)
 		if err != nil {
-			abs = *outPath
+			abs = path
 		}
 		fmt.Printf("%d finding(s) across %d package(s). Report: file://%s\n", len(findings), len(initial), abs)
 		fileOut = true
@@ -173,12 +183,17 @@ func run(argv []string) int {
 	return 0
 }
 
+// outputDir returns the configured report directory, or "." when unset.
+func outputDir(cfg *config.Config) string {
+	if cfg != nil && cfg.Report.Output != "" {
+		return cfg.Report.Output
+	}
+	return "."
+}
+
 // writeConfigReports writes the report files selected by the [report] section.
 func writeConfigReports(cfg *config.Config, report reporting.Report) error {
-	dir := cfg.Report.Output
-	if dir == "" {
-		dir = "."
-	}
+	dir := outputDir(cfg)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
