@@ -8,24 +8,30 @@ Go code can compile successfully and still contain runtime hazards. Sheriff aims
 
 ## How it works
 
+Sheriff loads your module with `go/packages`, runs its analyzers across every
+package, and prints a structured report. For example:
+
 ```text
-Go source
-    |
-    v
- Sheriff
-    |
- Analyze
-    |
- Detect hazards
-    |
- Suggest safe fixes
-    |
- Validate
-    |
-    v
- Go compiler
-    |
- Safer binary
+$ sheriff check ./...
+SHERIFF REPORT
+
+Packages analyzed:  12
+Findings detected:  7
+
+Findings:
+  [nilptr]  internal/config/config.go:42:9: nil pointer dereference: cfg may be nil
+  [divzero] internal/metrics/avg.go:18:12: division by zero: count is zero
+  [assert]  internal/middleware/auth.go:47:9: impossible type assertion: v is int, not *Session
+  [assert]  internal/middleware/mw.go:23:6: impossible type assertion: v is string, not *Logger
+  [bounds]  internal/parse/headers.go:31:15: index out of range: index 2 for length 2
+  [bounds]  internal/parse/parse.go:57:8: index out of range: index 4 for length 4
+  [nilptr]  internal/server/server.go:88:14: nil pointer dereference: res may be nil
+
+By analyzer:
+  assert   2
+  bounds   2
+  divzero  1
+  nilptr   2
 ```
 
 Sheriff is being built to analyse application code and dependencies, identify potential failures, apply safe corrections in an isolated workspace, and validate the result before building.
@@ -51,7 +57,7 @@ sheriff check ./...
 - [Architecture](docs/ARCHITECTURE.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Limitations](docs/LIMITATIONS.md)
-- [Contributing](docs/CONTRIBUTING.md)
+- [Contributing](CONTRIBUTING.md)
 
 ---
 
