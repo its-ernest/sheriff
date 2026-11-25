@@ -1,23 +1,30 @@
 // Command scanner is a small HTTP scanner that wires together the scanner,
-// parse and middleware packages.
+// parse and fetch packages.
 package main
 
 import (
 	"fmt"
 
-	"example/http-scanner/internal/middleware"
+	"example/http-scanner/internal/fetch"
 	"example/http-scanner/internal/parse"
 	"example/http-scanner/internal/scanner"
 )
 
 func main() {
-	// nilptr: no target configured, so Scan dereferences a nil response.
-	var cfg *scanner.Config
-	fmt.Println(scanner.Scan(cfg))
+	// A valid target is proven safe.
+	scanner.ProvenSafe()
 
-	// bounds: parsing an empty buffer reads element 0.
-	fmt.Println(parse.PeekEmpty())
+	// A missing address yields a nil config (maybe nil) and panics.
+	scanner.MaybeNil()
 
-	// assert: a non-logger context value is asserted to *Logger.
-	middleware.Run()
+	// Concurrency: a worker pool fetching URLs.
+	f := fetch.New([]string{"http://localhost"})
+	f.Start()
+	for _, r := range f.Collect() {
+		fmt.Println(string(r.Body))
+	}
+
+	// Discarded errors in parsing.
+	_, _ = parse.Decode([]byte(`{"Name": "arnold"}`))
+	fmt.Println(string(parse.Log(parse.Payload{Name: "arnold"})))
 }

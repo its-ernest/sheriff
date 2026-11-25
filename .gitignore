@@ -1,5 +1,5 @@
 # Build output
-/bin/
+**/bin/
 /sheriff
 
 # Test and coverage artifacts
@@ -8,8 +8,8 @@
 coverage.html
 
 # Sheriff reports
-sheriff-report.html
-.sheriff/
+**/sheriff-report.html
+**/.sheriff/
 
 # Editor and operating-system files
 .idea/

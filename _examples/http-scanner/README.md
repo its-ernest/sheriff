@@ -1,29 +1,33 @@
 # http-scanner
 
-A small HTTP scanner that demonstrates Sheriff finding defects across a
-realistic multi-package project. Each defect lives in the package where it
-naturally belongs.
+A realistic HTTP scanner used to exercise Sheriff across a whole project. It
+contains nil pointer cases (definite, maybe, proven-safe, unknown), discarded
+errors, and a concurrent worker pool.
 
 ## Layout
 
 - `cmd/scanner` — entry point.
-- `internal/scanner` — nil pointer dereference (nil response).
-- `internal/parse` — index out of range (empty buffer).
-- `internal/middleware` — impossible type assertion (non-logger value).
+- `internal/scanner` — nil pointer cases:
+  - `DefiniteNil` — a config never initialised (definite nil).
+  - `MaybeNil` — a config that may be nil (maybe nil).
+  - `ProvenSafe` — a config proven non-nil from the argument.
+  - `Unknown` — a config from an unresolved function value (unknown).
+- `internal/parse` — discarded errors (one fixable, one review).
+- `internal/fetch` — a concurrent worker pool (goroutines + channels).
 
-## Run
-
-```sh
-cd _examples/http-scanner
-go run ./cmd/scanner   # panics
-```
-
-## Analyze the whole project
+## Check
 
 ```sh
 cd _examples/http-scanner
-sheriff check ./...
+sheriff check ./...        # nilptr (definite + maybe) and discarded findings
 ```
 
-Expected: a `nilptr` finding in `scanner`, a `bounds` finding in `parse`, and an
-`assert` finding in `middleware`.
+## Build (remediate + compile)
+
+```sh
+sheriff build -o scanner ./...
+```
+
+Prints the report, remediates what it can in an isolated workspace (the
+fixable discarded error), lists what needs review, and builds the `scanner`
+binary. The original source is never modified.
