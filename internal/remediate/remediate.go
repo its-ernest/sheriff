@@ -61,7 +61,11 @@ func FixFile(filename string, src []byte, findings []Finding) ([]byte, Result) {
 		}
 		results := flattenResults(resultFields(fn))
 		if len(results) == 0 || !isErrorExpr(results[len(results)-1]) {
-			review = append(review, fmt.Sprintf("%s: enclosing function does not return an error as its last result; review", f.Position))
+			reason := "enclosing function does not return an error; review"
+			if len(results) > 0 && isErrorExpr(results[0]) {
+				reason = "error is not the last result; review the signature"
+			}
+			review = append(review, fmt.Sprintf("%s: %s", f.Position, reason))
 			continue
 		}
 		idx := 0

@@ -34,10 +34,10 @@ const version = "devel"
 const usage = `usage: sheriff check|build|run [flags] <packages>
 
 check runs Sheriff's safety analyzers and prints a structured report. build
-scans and applies conservative fixes to an isolated workspace copy (the original
-source is never modified). run does both: check, then build. The [analysis]
-section of the config file can enable a test/race pre-flight and go vet that
-halts on failure. The tests flag gates all test execution.
+prints the report, applies conservative fixes to an isolated workspace copy, and
+compiles the result (the original source is never modified). run is an alias for
+build. The [analysis] section of the config file can enable a test/race pre-flight
+and go vet that halts on failure. The tests flag gates all test execution.
 
 Flags:
   -json     emit the report as JSON
@@ -81,13 +81,34 @@ func run(argv []string) int {
 	return runCheck(prog, rest)
 }
 
-// runAll runs the full pipeline: the check phase (pre-flight, analysis and
-// report) followed by the build phase (remediation in an isolated workspace).
+// runAll runs the full pipeline. build already includes the check phase, so run
+// is an alias for build.
 func runAll(prog string, args []string) int {
-	if code := runCheck(prog, args); code == 1 || code == 2 {
-		return code
-	}
 	return runBuild(prog, args)
+}
+
+// preFlight runs the config-driven gates (test/race, then go vet). It returns a
+// non-zero exit code if a gate fails, so the caller can halt.
+func preFlight(prog string, fileCfg *config.Config, patterns []string) int {
+	if fileCfg == nil {
+		return 0
+	}
+	if fileCfg.Analysis.Tests {
+		testArgs := []string{"test"}
+		if fileCfg.Analysis.Races {
+			testArgs = append(testArgs, "-race")
+		}
+		testArgs = append(testArgs, patterns...)
+		if code := runGo(prog, testArgs...); code != 0 {
+			return code
+		}
+	}
+	if fileCfg.Analysis.Vet {
+		if code := runGo(prog, append([]string{"vet"}, patterns...)...); code != 0 {
+			return code
+		}
+	}
+	return 0
 }
 
 // runCheck runs Sheriff's own analyzers over the named packages.
@@ -127,25 +148,9 @@ func runCheck(prog string, args []string) int {
 		return 2
 	}
 
-	// Pre-flight gates, driven by the config (the source of truth): the test
-	// suite (with the race detector when enabled), then go vet. If any fails,
-	// halt before running Sheriff's own analyzers.
-	if fileCfg != nil {
-		if fileCfg.Analysis.Tests {
-			testArgs := []string{"test"}
-			if fileCfg.Analysis.Races {
-				testArgs = append(testArgs, "-race")
-			}
-			testArgs = append(testArgs, patterns...)
-			if code := runGo(prog, testArgs...); code != 0 {
-				return code
-			}
-		}
-		if fileCfg.Analysis.Vet {
-			if code := runGo(prog, append([]string{"vet"}, patterns...)...); code != 0 {
-				return code
-			}
-		}
+	// Pre-flight gates, driven by the config (the source of truth).
+	if code := preFlight(prog, fileCfg, patterns); code != 0 {
+		return code
 	}
 
 	cfg := &packages.Config{Mode: packages.LoadAllSyntax | packages.NeedModule}
@@ -441,6 +446,10 @@ func runBuild(prog string, args []string) int {
 		return 2
 	}
 
+	if code := preFlight(prog, fileCfg, patterns); code != 0 {
+		return code
+	}
+
 	analyzers := analyzer.Analyzers()
 	cfg := &packages.Config{Mode: packages.LoadAllSyntax | packages.NeedModule}
 	initial, err := packages.Load(cfg, patterns...)
@@ -462,6 +471,16 @@ func runBuild(prog string, args []string) int {
 	}
 	findings, _ := collectFindings(graph)
 	sort.Slice(findings, func(i, j int) bool { return findings[i].Position < findings[j].Position })
+
+	// Check phase: print the structured report (and any configured report files)
+	// before remediating.
+	report := reporting.Report{Packages: len(targets), Findings: findings}
+	report.WriteText(os.Stdout)
+	if fileCfg != nil && (fileCfg.Report.HTML || fileCfg.Report.JSON) {
+		if err := writeConfigReports(fileCfg, report); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
+		}
+	}
 
 	byFile := map[string][]remediate.Finding{}
 	for _, f := range findings {
@@ -490,7 +509,8 @@ func runBuild(prog string, args []string) int {
 		return 1
 	}
 
-	applied, review := 0, 0
+	applied, reviewCount := 0, 0
+	var reviewMsgs []string
 	for file, list := range byFile {
 		src, err := os.ReadFile(file)
 		if err != nil {
@@ -498,7 +518,8 @@ func runBuild(prog string, args []string) int {
 		}
 		out, res := remediate.FixFile(file, src, list)
 		applied += res.Applied
-		review += len(res.Review)
+		reviewCount += len(res.Review)
+		reviewMsgs = append(reviewMsgs, res.Review...)
 		if res.Applied > 0 {
 			rel, err := filepath.Rel(cwd, file)
 			if err != nil {
@@ -513,7 +534,11 @@ func runBuild(prog string, args []string) int {
 			}
 		}
 	}
-	fmt.Printf("Remediation: %d applied, %d need review\nWorkspace: %s\n", applied, review, ws)
+	fmt.Printf("Remediation: %d applied, %d need review\n", applied, reviewCount)
+	for _, msg := range reviewMsgs {
+		fmt.Printf("Review: %s\n", msg)
+	}
+	fmt.Printf("Workspace: %s\n", ws)
 
 	output := *oFlag
 	if output == "" && fileCfg != nil {
