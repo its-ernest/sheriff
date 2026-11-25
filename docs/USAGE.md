@@ -94,6 +94,12 @@ if err != nil {
 Findings the remediator cannot fix safely are reported for review: the enclosing
 function does not return an error, or the error is not the last result.
 
+## Full run
+
+`sheriff run` does both phases in one pass: the check phase (pre-flight,
+analysis and report) followed by the build phase (remediation in an isolated
+workspace). It is a convenience for "show me the findings, then fix what it can".
+
 ## Configuration
 
 Sheriff reads an INI file (`sheriff.ini` by default; override with `-config`).

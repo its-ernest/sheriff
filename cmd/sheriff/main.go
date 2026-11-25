@@ -31,13 +31,13 @@ import (
 // version is Sheriff's own version, distinct from the analyzer set.
 const version = "devel"
 
-const usage = `usage: sheriff check|build [flags] <packages>
+const usage = `usage: sheriff check|build|run [flags] <packages>
 
 check runs Sheriff's safety analyzers and prints a structured report. build
 scans and applies conservative fixes to an isolated workspace copy (the original
-source is never modified). The [analysis] section of the config file can enable a
-test/race pre-flight and go vet that halts on failure. The tests flag gates all
-test execution.
+source is never modified). run does both: check, then build. The [analysis]
+section of the config file can enable a test/race pre-flight and go vet that
+halts on failure. The tests flag gates all test execution.
 
 Flags:
   -json     emit the report as JSON
@@ -72,10 +72,22 @@ func run(argv []string) int {
 		fmt.Fprintf(os.Stderr, "%s: %v\n\n%s", prog, err, usage)
 		return 2
 	}
-	if sub == "build" {
+	switch sub {
+	case "build":
 		return runBuild(prog, rest)
+	case "run":
+		return runAll(prog, rest)
 	}
 	return runCheck(prog, rest)
+}
+
+// runAll runs the full pipeline: the check phase (pre-flight, analysis and
+// report) followed by the build phase (remediation in an isolated workspace).
+func runAll(prog string, args []string) int {
+	if code := runCheck(prog, args); code == 1 || code == 2 {
+		return code
+	}
+	return runBuild(prog, args)
 }
 
 // runCheck runs Sheriff's own analyzers over the named packages.
@@ -373,7 +385,7 @@ func splitSub(args []string) (string, []string, error) {
 			i++ // the config path is a separate value
 		case strings.HasPrefix(args[i], "-"):
 			// other flags take no value
-		case args[i] == "check" || args[i] == "build":
+		case args[i] == "check" || args[i] == "build" || args[i] == "run":
 			rest := append(append([]string{}, args[:i]...), args[i+1:]...)
 			return args[i], rest, nil
 		default:

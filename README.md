@@ -49,6 +49,7 @@ go install github.com/its-ernest/sheriff/cmd/sheriff@latest
 ```bash
 sheriff check ./...   # analyze and print a structured report
 sheriff build ./...   # experimental: apply safe fixes in an isolated copy
+sheriff run ./...     # check + build in one pass
 ```
 
 `sheriff build` never modifies your source. It copies the project to an isolated
