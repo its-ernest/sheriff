@@ -71,13 +71,29 @@ func FixFile(filename string, src []byte, findings []Finding) ([]byte, Result) {
 				break
 			}
 		}
+		nonErr := results[:len(results)-1]
+		zeros := make([]string, len(nonErr))
+		buildable := true
+		for i, r := range nonErr {
+			z, good := zeroValue(r)
+			if !good {
+				buildable = false
+				break
+			}
+			zeros[i] = z
+		}
+		if !buildable {
+			review = append(review, fmt.Sprintf("%s: cannot build a zero return value; review", f.Position))
+			continue
+		}
 		call := callText(assign, idx)
 		indent := lineIndent(src, fset.Position(assign.Pos()).Line)
 		start := fset.Position(blank.Pos()).Offset
-		end := fset.Position(assign.End()).Offset
+		end := lineEnd(src, fset.Position(assign.End()).Offset)
+		ret := "return " + strings.Join(append(zeros, fmt.Sprintf("fmt.Errorf(\"%s: %%w\", err)", call)), ", ")
 		edits = append(edits,
 			edit{start: start, end: start + 1, text: "err"},
-			edit{start: end, end: end, text: fmt.Sprintf("\n%sif err != nil {\n%s\treturn fmt.Errorf(\"%s: %%w\", err)\n%s}", indent, indent, call, indent)},
+			edit{start: end, end: end, text: fmt.Sprintf("\n%sif err != nil {\n%s\t%s\n%s}", indent, indent, ret, indent)},
 		)
 		applied++
 	}
@@ -190,6 +206,27 @@ func isErrorExpr(e ast.Expr) bool {
 	return ok && id.Name == "error"
 }
 
+// zeroValue returns the zero value literal for a result type, and whether it can
+// be built syntactically.
+func zeroValue(expr ast.Expr) (string, bool) {
+	switch t := unparen(expr).(type) {
+	case *ast.StarExpr, *ast.ArrayType, *ast.MapType, *ast.FuncType, *ast.ChanType, *ast.InterfaceType:
+		return "nil", true
+	case *ast.Ident:
+		switch t.Name {
+		case "string":
+			return `""`, true
+		case "bool":
+			return "false", true
+		case "int", "int8", "int16", "int32", "int64",
+			"uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
+			"byte", "rune", "float32", "float64", "complex64", "complex128":
+			return "0", true
+		}
+	}
+	return "", false
+}
+
 func unparen(e ast.Expr) ast.Expr {
 	for {
 		p, ok := e.(*ast.ParenExpr)
@@ -223,6 +260,17 @@ func lineStart(src []byte, line int) int {
 		}
 	}
 	return 0
+}
+
+// lineEnd returns the offset of the newline that ends the line containing
+// offset (or len(src) if the line is the last).
+func lineEnd(src []byte, offset int) int {
+	for i := offset; i < len(src); i++ {
+		if src[i] == '\n' {
+			return i
+		}
+	}
+	return len(src)
 }
 
 func importsFmt(src []byte) bool {

@@ -52,6 +52,7 @@ Two realistic, multi-package projects. Each is its own Go module (with a
 | --- | --- | --- |
 | [`http-scanner`](./http-scanner) | `cmd/scanner`, `internal/{scanner,parse,middleware}` | nilptr, bounds, assert |
 | [`concurrent-pipeline`](./concurrent-pipeline) | `cmd/pipeline`, `internal/pipeline` | nilptr, bounds, assert (channels/goroutines) |
+| [`discarded-errors`](./discarded-errors) | `cmd/app`, `internal/store` | discarded errors (exercises `sheriff build` remediation) |
 
 Run and analyze a project from inside its directory:
 
