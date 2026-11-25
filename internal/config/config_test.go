@@ -76,3 +76,16 @@ func TestParseArrayMultiline(t *testing.T) {
 		t.Errorf("modules = %v", cfg.Remediation.Modules)
 	}
 }
+
+func TestParseBuild(t *testing.T) {
+	cfg, err := Parse(strings.NewReader("[project]\nname = \"myapp\"\n\n[build]\noutput = \"myapp\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Build.Output != "myapp" {
+		t.Errorf("build.output = %q", cfg.Build.Output)
+	}
+	if cfg.Project.Name != "myapp" {
+		t.Errorf("project.name = %q", cfg.Project.Name)
+	}
+}

@@ -17,12 +17,18 @@ import (
 type Config struct {
 	Project     Project
 	Analysis    Analysis
+	Build       Build
 	Remediation Remediation
 	Report      Report
 }
 
 type Project struct {
 	Name string
+}
+
+// Build selects the output binary produced by `sheriff build`.
+type Build struct {
+	Output string
 }
 
 type Analysis struct {
@@ -118,6 +124,10 @@ func (c *Config) set(section, key, val string) {
 			c.Remediation.Dependencies = parseBool(val)
 		case "modules":
 			c.Remediation.Modules = parseArray(val)
+		}
+	case "build":
+		if key == "output" {
+			c.Build.Output = unquote(val)
 		}
 	case "report":
 		switch key {

@@ -421,6 +421,7 @@ func runBuild(prog string, args []string) int {
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 	configPath := fs.String("config", "sheriff.ini", "config file (INI)")
+	oFlag := fs.String("o", "", "output binary name (overrides [build] output)")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return 0
@@ -432,7 +433,13 @@ func runBuild(prog string, args []string) int {
 		fmt.Fprint(os.Stderr, usage)
 		return 2
 	}
-	_, _ = config.Load(*configPath)
+	var fileCfg *config.Config
+	if c, err := config.Load(*configPath); err == nil {
+		fileCfg = &c
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
+		return 2
+	}
 
 	analyzers := analyzer.Analyzers()
 	cfg := &packages.Config{Mode: packages.LoadAllSyntax | packages.NeedModule}
@@ -507,7 +514,74 @@ func runBuild(prog string, args []string) int {
 		}
 	}
 	fmt.Printf("Remediation: %d applied, %d need review\nWorkspace: %s\n", applied, review, ws)
+
+	output := *oFlag
+	if output == "" && fileCfg != nil {
+		output = fileCfg.Build.Output
+		if output == "" {
+			output = fileCfg.Project.Name
+		}
+	}
+	if output != "" {
+		if err := buildWorkspace(ws, cwd, output, patterns); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: build failed: %v\n", prog, err)
+			return 1
+		}
+	}
 	return 0
+}
+
+// buildWorkspace compiles the remediated copy in ws into the output binary.
+func buildWorkspace(ws, cwd, output string, patterns []string) error {
+	mains, err := mainPackages(ws, patterns)
+	if err != nil {
+		return err
+	}
+	if len(mains) == 0 {
+		fmt.Println("Nothing to build (no main package).")
+		return nil
+	}
+	dst := output
+	if !filepath.IsAbs(dst) {
+		dst = filepath.Join(cwd, output)
+	}
+	args := []string{"build", "-o", dst}
+	if len(mains) > 1 {
+		if err := os.MkdirAll(dst, 0o755); err != nil {
+			return err
+		}
+	}
+	args = append(args, mains...)
+	cmd := exec.Command("go", args...)
+	cmd.Dir = ws
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	fmt.Printf("Built: %s\n", dst)
+	return nil
+}
+
+// mainPackages returns the import paths of the main packages matched by the
+// patterns, evaluated in the workspace.
+func mainPackages(ws string, patterns []string) ([]string, error) {
+	args := append([]string{"list", "-f", "{{.Name}}\t{{.ImportPath}}"}, patterns...)
+	cmd := exec.Command("go", args...)
+	cmd.Dir = ws
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var mains []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) == 2 && parts[0] == "main" {
+			mains = append(mains, parts[1])
+		}
+	}
+	return mains, nil
 }
 
 // fileOf returns the file path from a "file:line:col" position.

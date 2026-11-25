@@ -94,6 +94,10 @@ if err != nil {
 Findings the remediator cannot fix safely are reported for review: the enclosing
 function does not return an error, or the error is not the last result.
 
+After remediating, `sheriff build` compiles the isolated copy into the output
+binary named by `[build] output` (or `-o NAME`). The binary is written to the
+current directory; the original source is never touched.
+
 ## Full run
 
 `sheriff run` does both phases in one pass: the check phase (pre-flight,

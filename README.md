@@ -54,8 +54,9 @@ sheriff run ./...     # check + build in one pass
 
 `sheriff build` never modifies your source. It copies the project to an isolated
 workspace, fixes what it can prove (currently discarded errors in functions that
-return an error), and prints the workspace path. Findings it cannot fix safely are
-reported for review.
+return an error), prints the workspace path, then compiles the remediated copy
+into the output binary named by `[build] output` (or `-o`). Findings it cannot fix
+safely are reported for review.
 
 ## Documentation
 
