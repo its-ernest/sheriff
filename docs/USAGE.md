@@ -98,6 +98,18 @@ After remediating, `sheriff build` compiles the isolated copy into the output
 binary named by `[build] output` (or `-o NAME`). The binary is written to the
 current directory; the original source is never touched.
 
+`[build] mode` controls the guarantee:
+
+- `strict` (default) — if any finding remains unresolved after remediation, the
+  build fails without producing a binary ("safe or fail").
+- `warn` — build anyway, reporting what remains.
+
+```ini
+[build]
+mode = "strict"   # strict | warn
+output = "myapp"
+```
+
 ## Full run
 
 `sheriff run` does both phases in one pass: the check phase (pre-flight,

@@ -56,7 +56,9 @@ sheriff run ./...     # check + build in one pass
 copies the project to an isolated workspace, fixes what it can prove (currently
 discarded errors in functions that return an error), lists the findings that need
 review, prints the workspace path, and compiles the remediated copy into the
-output binary named by `[build] output` (or `-o`).
+output binary named by `[build] output` (or `-o`). In `strict` mode (the
+default) the build is "safe or fail": if any finding remains unresolved, it fails
+without producing a binary. Set `[build] mode = "warn"` to build anyway.
 
 ## Documentation
 

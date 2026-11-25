@@ -540,6 +540,18 @@ func runBuild(prog string, args []string) int {
 	}
 	fmt.Printf("Workspace: %s\n", ws)
 
+	// Strict mode: the build is "safe or fail". If anything remains unresolved
+	// after remediation, fail without producing a binary.
+	mode := "strict"
+	if fileCfg != nil && fileCfg.Build.Mode != "" {
+		mode = fileCfg.Build.Mode
+	}
+	unresolved := len(findings) - applied
+	if mode == "strict" && unresolved > 0 {
+		fmt.Printf("Build failed: %d unresolved finding(s) in strict mode\n", unresolved)
+		return 1
+	}
+
 	output := *oFlag
 	if output == "" && fileCfg != nil {
 		output = fileCfg.Build.Output

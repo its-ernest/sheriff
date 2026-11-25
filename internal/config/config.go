@@ -29,6 +29,7 @@ type Project struct {
 // Build selects the output binary produced by `sheriff build`.
 type Build struct {
 	Output string
+	Mode   string
 }
 
 type Analysis struct {
@@ -126,8 +127,11 @@ func (c *Config) set(section, key, val string) {
 			c.Remediation.Modules = parseArray(val)
 		}
 	case "build":
-		if key == "output" {
+		switch key {
+		case "output":
 			c.Build.Output = unquote(val)
+		case "mode":
+			c.Build.Mode = unquote(val)
 		}
 	case "report":
 		switch key {

@@ -78,12 +78,15 @@ func TestParseArrayMultiline(t *testing.T) {
 }
 
 func TestParseBuild(t *testing.T) {
-	cfg, err := Parse(strings.NewReader("[project]\nname = \"myapp\"\n\n[build]\noutput = \"myapp\"\n"))
+	cfg, err := Parse(strings.NewReader("[project]\nname = \"myapp\"\n\n[build]\nmode = \"strict\"\noutput = \"myapp\"\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Build.Output != "myapp" {
 		t.Errorf("build.output = %q", cfg.Build.Output)
+	}
+	if cfg.Build.Mode != "strict" {
+		t.Errorf("build.mode = %q", cfg.Build.Mode)
 	}
 	if cfg.Project.Name != "myapp" {
 		t.Errorf("project.name = %q", cfg.Project.Name)
