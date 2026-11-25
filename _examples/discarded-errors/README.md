@@ -8,10 +8,9 @@ library so it can be run and analyzed as a project.
 
 ```sh
 cd _examples/discarded-errors
-sheriff check ./...
+sheriff check ./...          # reports discarded errors
+sheriff check ./cmd/app      # also covers internal/store (imported)
 ```
-
-Reports the discarded errors (the `discarded` analyzer).
 
 ## Build (remediate)
 

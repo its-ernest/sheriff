@@ -148,7 +148,8 @@ func runCheck(prog string, args []string) int {
 	}
 	pkgErrors := packages.PrintErrors(initial)
 
-	graph, err := checker.Analyze(analyzers, initial, nil)
+	targets := modulePackages(initial)
+	graph, err := checker.Analyze(analyzers, targets, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
 		return 1
@@ -165,7 +166,7 @@ func runCheck(prog string, args []string) int {
 		return findings[i].Message < findings[j].Message
 	})
 
-	report := reporting.Report{Packages: len(initial), Findings: findings}
+	report := reporting.Report{Packages: len(targets), Findings: findings}
 	switch {
 	case *htmlOut:
 		path := *outPath
@@ -271,6 +272,41 @@ func writeHTML(path string, report reporting.Report) error {
 		return err
 	}
 	return f.Close()
+}
+
+// modulePackages returns the packages in the main module reachable from the
+// initial packages, including transitive same-module imports. This makes a
+// target such as ./cmd/app also analyze the internal packages it depends on.
+func modulePackages(initial []*packages.Package) []*packages.Package {
+	if len(initial) == 0 {
+		return nil
+	}
+	mainMod := initial[0].Module
+	if mainMod == nil {
+		return initial
+	}
+	seen := make(map[*packages.Package]bool)
+	var out []*packages.Package
+	var visit func(p *packages.Package)
+	visit = func(p *packages.Package) {
+		if p == nil || seen[p] {
+			return
+		}
+		seen[p] = true
+		if p.Module != nil && p.Module.Path == mainMod.Path {
+			out = append(out, p)
+		}
+		for _, imp := range p.Imports {
+			visit(imp)
+		}
+	}
+	for _, p := range initial {
+		visit(p)
+	}
+	if len(out) == 0 {
+		return initial
+	}
+	return out
 }
 
 // collectFindings gathers diagnostics from the root actions (one per analyzer
@@ -399,7 +435,8 @@ func runBuild(prog string, args []string) int {
 	}
 	packages.PrintErrors(initial)
 
-	graph, err := checker.Analyze(analyzers, initial, nil)
+	targets := modulePackages(initial)
+	graph, err := checker.Analyze(analyzers, targets, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
 		return 1

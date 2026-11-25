@@ -29,7 +29,9 @@ sheriff check ./cmd/server
 ```
 
 `./...` walks the whole module — `cmd/...`, `internal/...`, `pkg/...` — so you do
-not run Sheriff per file or per directory.
+not run Sheriff per file or per directory. A specific target such as
+`./cmd/app` also analyzes the same-module packages it imports (for example
+`internal/store`), so correlated packages are covered.
 
 ## Pre-flight: race detector and go vet
 
