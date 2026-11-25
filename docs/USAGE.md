@@ -71,6 +71,27 @@ With `-html`, Sheriff prints a `file://` URL you can click to open the report in
 a browser. The report is a single self-contained file (no external assets) with a
 summary, a filter box, and collapsible per-analyzer groups.
 
+## Remediation (experimental)
+
+`sheriff build` scans the project, then applies conservative fixes to an
+isolated copy (the original source is never modified) and prints the workspace
+path. The first capability fixes discarded errors in functions that return an
+error as the last result:
+
+```go
+// before
+data, _ := json.Marshal(user)
+
+// after (in the isolated workspace)
+data, err := json.Marshal(user)
+if err != nil {
+	return fmt.Errorf("json.Marshal(user): %w", err)
+}
+```
+
+Findings the remediator cannot fix safely are reported for review: the enclosing
+function does not return an error, or the error is not the last result.
+
 ## Configuration
 
 Sheriff reads an INI file (`sheriff.ini` by default; override with `-config`).

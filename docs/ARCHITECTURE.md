@@ -14,7 +14,9 @@ loading, type checking and the analysis driver come from `golang.org/x/tools`.
 │   │   ├── nilptr/       nil pointer dereference analyzer
 │   │   ├── divzero/      division/modulo by zero analyzer
 │   │   ├── bounds/       index and slice bounds analyzer
-│   │   └── assert/       impossible type assertion analyzer
+│   │   ├── assert/       impossible type assertion analyzer
+│   │   └── discarded/    discarded error analyzer
+│   ├── remediate/        experimental fix engine (isolated workspace)
 │   └── reporting/        structured report formatting (text, JSON, HTML)
 ├── testdata/             analyzer fixtures
 ├── _examples/            runnable vulnerable example projects

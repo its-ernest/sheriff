@@ -11,6 +11,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,16 +24,18 @@ import (
 
 	"github.com/its-ernest/sheriff/internal/analyzer"
 	"github.com/its-ernest/sheriff/internal/config"
+	"github.com/its-ernest/sheriff/internal/remediate"
 	"github.com/its-ernest/sheriff/internal/reporting"
 )
 
 // version is Sheriff's own version, distinct from the analyzer set.
 const version = "devel"
 
-const usage = `usage: sheriff check [flags] <packages>
+const usage = `usage: sheriff check|build [flags] <packages>
 
-Run Sheriff's safety analyzers over the named Go packages and print a
-structured report. The [analysis] section of the config file can enable a
+check runs Sheriff's safety analyzers and prints a structured report. build
+scans and applies conservative fixes to an isolated workspace copy (the original
+source is never modified). The [analysis] section of the config file can enable a
 test/race pre-flight and go vet that halts on failure. The tests flag gates all
 test execution.
 
@@ -64,12 +67,14 @@ func run(argv []string) int {
 		return 0
 	}
 
-	_, rest, err := splitSub(args)
+	sub, rest, err := splitSub(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n\n%s", prog, err, usage)
 		return 2
 	}
-
+	if sub == "build" {
+		return runBuild(prog, rest)
+	}
 	return runCheck(prog, rest)
 }
 
@@ -332,7 +337,7 @@ func splitSub(args []string) (string, []string, error) {
 			i++ // the config path is a separate value
 		case strings.HasPrefix(args[i], "-"):
 			// other flags take no value
-		case args[i] == "check":
+		case args[i] == "check" || args[i] == "build":
 			rest := append(append([]string{}, args[:i]...), args[i+1:]...)
 			return args[i], rest, nil
 		default:
@@ -359,4 +364,138 @@ func runGo(prog string, args ...string) int {
 		return 1
 	}
 	return 0
+}
+
+// runBuild scans the packages, then applies conservative fixes to a copy of the
+// project in an isolated workspace. The original source is never modified.
+func runBuild(prog string, args []string) int {
+	fs := flag.NewFlagSet(prog, flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
+	configPath := fs.String("config", "sheriff.ini", "config file (INI)")
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	patterns := fs.Args()
+	if len(patterns) == 0 {
+		fmt.Fprint(os.Stderr, usage)
+		return 2
+	}
+	_, _ = config.Load(*configPath)
+
+	analyzers := analyzer.Analyzers()
+	cfg := &packages.Config{Mode: packages.LoadAllSyntax | packages.NeedModule}
+	initial, err := packages.Load(cfg, patterns...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
+		return 1
+	}
+	if len(initial) == 0 {
+		fmt.Fprintf(os.Stderr, "%s: %s matched no packages\n", prog, strings.Join(patterns, " "))
+		return 1
+	}
+	packages.PrintErrors(initial)
+
+	graph, err := checker.Analyze(analyzers, initial, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
+		return 1
+	}
+	findings, _ := collectFindings(graph)
+	sort.Slice(findings, func(i, j int) bool { return findings[i].Position < findings[j].Position })
+
+	byFile := map[string][]remediate.Finding{}
+	for _, f := range findings {
+		if f.Analyzer != "discarded" {
+			continue
+		}
+		file := fileOf(f.Position)
+		if file == "" {
+			continue
+		}
+		byFile[file] = append(byFile[file], remediate.Finding{Analyzer: f.Analyzer, Position: f.Position, Message: f.Message})
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
+		return 1
+	}
+	ws, err := os.MkdirTemp("", "sheriff-build-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
+		return 1
+	}
+	if err := copyTree(cwd, ws); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
+		return 1
+	}
+
+	applied, review := 0, 0
+	for file, list := range byFile {
+		src, err := os.ReadFile(file)
+		if err != nil {
+			continue
+		}
+		out, res := remediate.FixFile(file, src, list)
+		applied += res.Applied
+		review += len(res.Review)
+		if res.Applied > 0 {
+			rel, err := filepath.Rel(cwd, file)
+			if err != nil {
+				rel = filepath.Base(file)
+			}
+			dst := filepath.Join(ws, rel)
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				continue
+			}
+			if err := os.WriteFile(dst, out, 0o644); err != nil {
+				continue
+			}
+		}
+	}
+	fmt.Printf("Remediation: %d applied, %d need review\nWorkspace: %s\n", applied, review, ws)
+	return 0
+}
+
+// fileOf returns the file path from a "file:line:col" position.
+func fileOf(pos string) string {
+	i := strings.LastIndexByte(pos, ':')
+	if i < 0 {
+		return ""
+	}
+	j := strings.LastIndexByte(pos[:i], ':')
+	if j < 0 {
+		return pos[:i]
+	}
+	return pos[:j]
+}
+
+// copyTree copies the regular files under src into dst, skipping VCS and build
+// output directories.
+func copyTree(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "bin", ".sheriff":
+				return filepath.SkipDir
+			}
+			return os.MkdirAll(filepath.Join(dst, rel), 0o755)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dst, rel), data, 0o644)
+	})
 }

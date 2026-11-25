@@ -47,8 +47,14 @@ go install github.com/its-ernest/sheriff/cmd/sheriff@latest
 ## Usage
 
 ```bash
-sheriff check ./...
+sheriff check ./...   # analyze and print a structured report
+sheriff build ./...   # experimental: apply safe fixes in an isolated copy
 ```
+
+`sheriff build` never modifies your source. It copies the project to an isolated
+workspace, fixes what it can prove (currently discarded errors in functions that
+return an error), and prints the workspace path. Findings it cannot fix safely are
+reported for review.
 
 ## Documentation
 

@@ -10,6 +10,7 @@ Diagnostics are advisory.
 | [`divzero`](#divzero) | integer division or modulo by a provably zero divisor |
 | [`bounds`](#bounds) | indexing or slicing that is provably out of range |
 | [`assert`](#assert) | type assertions that provably cannot succeed |
+| [`discarded`](#discarded) | errors discarded with the blank identifier |
 
 ## nilptr
 
@@ -75,6 +76,19 @@ ignored because it does not panic.
 func consume(r io.Reader) {
 	_ = r.(*bytes.Buffer) // impossible type assertion: r is *strings.Reader, not *bytes.Buffer
 }
+```
+
+## discarded
+
+Reports errors discarded with the blank identifier, for example
+`data, _ := json.Marshal(user)`. It is the basis for the experimental
+remediator: `sheriff build` uses these findings to fix discarded errors in
+functions that return an error as their last result. The two-value form is
+ignored when the second value is not an error (for example a map lookup or a
+comma-ok type assertion).
+
+```go
+data, _ := json.Marshal(user) // discarded error: json.Marshal(user)
 ```
 
 ## Shared behaviour

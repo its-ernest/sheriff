@@ -10,6 +10,7 @@ import (
 
 	"github.com/its-ernest/sheriff/internal/analyzer/assert"
 	"github.com/its-ernest/sheriff/internal/analyzer/bounds"
+	"github.com/its-ernest/sheriff/internal/analyzer/discarded"
 	"github.com/its-ernest/sheriff/internal/analyzer/divzero"
 	"github.com/its-ernest/sheriff/internal/analyzer/nilptr"
 )
@@ -24,4 +25,5 @@ var analyzers = []*analysis.Analyzer{
 	divzero.Analyzer,
 	bounds.Analyzer,
 	assert.Analyzer,
+	discarded.Analyzer,
 }
